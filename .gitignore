@@ -1,0 +1,24 @@
+# 内部 todo，不公开
+待办.md
+
+# 本地自备字体（商业授权，不随仓库分发）
+assets/fonts/local/
+
+# 依赖（lockfile 要提交，别加进来）
+node_modules/
+
+# 我自己的编辑备份 —— 每次改关键文件前留的底，不该上库
+*.bak
+*.bak-*
+*.tmp
+*.log
+_chk_*.js
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/

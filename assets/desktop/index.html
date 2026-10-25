@@ -1,0 +1,2007 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>大肥鱼 · 桌面</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    /* 整块玻璃必须真透明。写成 rgba(0,0,0,0) 在部分驱动上会渲染成黑色，
+       所以这里干脆不写 background。 */
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  .av {
+    position: absolute;
+    pointer-events: none;
+    /* 出场：淡入 + 从下方轻微上浮。渲染器就绪前她一直是透明的（见 data-ready），
+       所以底下那半句"从桌面底下升上来"其实发生在看不见的时候 —— 真正要看的
+       "从体力条掉到地面"由 layout() 里的 WAAPI 负责，不靠这里的 transition。
+       ⚠️ left/top **不要**再放 transition：位置动画统一走 WAAPI，两套机制混着会打架。 */
+    opacity: 0;
+    transform: translateY(26px);
+    transition:
+      opacity .42s ease,
+      transform .62s cubic-bezier(.34,1.56,.64,1);
+  }
+  /* 只有渲染好了才接鼠标 —— 加载中的空盒子不该吃掉桌面上的点击 */
+  .av[data-ready="1"] { opacity: 1; transform: translateY(0); pointer-events: auto; cursor: grab; }
+  .av[data-drag="1"] { cursor: grabbing; transition: none; transform: translateY(0); }
+  /* 退场：沉回去、缩一点、淡出。比出场快 —— 这是用户主动关掉的动作，不该拖泥带水 */
+  .av[data-out="1"] {
+    opacity: 0; transform: translateY(26px) scale(.92); pointer-events: none;
+    transition: opacity .28s ease, transform .34s ease;
+  }
+  .av canvas, .av svg { display: block; }
+  /* 头顶体力条：左键点她时弹出来，5 秒后自己收回去。
+     ⚠️ 出入场必须分开用两套机制：
+       · **入场 = keyframes**。新建的 img 元素在同一个 tick 里设终态，浏览器会把
+         初始态和终态合成一帧，transition 根本不跑 —— 这就是之前"突然出现"的原因。
+         keyframes 从 0% 播起，不受这个影响。
+       · **离场 = transition**。收回是可打断的，transition 能 retarget，且哥哥说渐隐效果不错。
+     过冲用弹性的 ease-out（cubic-bezier 里 y > 1），配合 50%/72%/88% 三个回稳点，
+     弹一下再定住，比单段曲线更有"黏性"。 */
+  /* ── 头顶双体力条（2026-10-22）─────────────────────────────────────
+     上面大条 = 上下文体力（越用越少），下面小条 = 健康度（有没有开始打转）。
+     定位和出入场动画整个交给这个容器，里面两张图只负责显示 ——
+     动画挂在子图上的话，两条会各弹各的，看着像打架。 */
+  .hp-stack {
+    --hp-w: 300px;
+    position: absolute; left: 50%; top: -40px;
+    width: var(--hp-w);
+    margin-left: calc(var(--hp-w) / -2);
+    pointer-events: none;
+    transform-origin: 50% 100%;   /* 从她头顶这个点张开，不是从中心放大 */
+    filter: drop-shadow(0 6px 16px rgba(0,0,0,.5));
+    animation: hpPop .48s cubic-bezier(.2,.95,.3,1.25) both;
+  }
+  .hp-stack img { display: block; width: 100%; height: auto; }
+
+  /* ── 状态面板（2026-10-22 哥哥要的）────────────────────────────────
+     半透明胶囊，写她现在是五档里的哪一档。跟体力条同一套出入场动画
+     （它是 .hp-stack 的子元素，直接吃父层的 hpPop/hpRetract）。 */
+  .hp-mood {
+    margin-top: 6px;
+    text-align: center;
+    pointer-events: none;
+  }
+  .hp-mood span {
+    display: inline-block;
+    padding: 3px 13px;
+    border-radius: 999px;
+    background: rgba(16, 24, 44, .58);
+    border: 1px solid rgba(140, 190, 255, .30);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .28);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    color: #dcebff;
+    font: 14px/1.55 XingchenLocal, XingchenKuaiLe, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    letter-spacing: .06em;
+    white-space: nowrap;
+  }
+
+  /* ── 头顶文字气泡（2026-10-22 哥哥要求把提醒从 QQ 换成这个）──────────
+     白底胶囊 + 下方小尖角 + 轻阴影，像漫画里的对话泡。
+     放在双体力条**再往上**（margin-bottom 54px）：两个同时出现时不互相遮挡。
+     入场走 keyframes，理由和双条一模一样 —— 新建节点同 tick 设终态 transition 不跑。 */
+  .bub {
+    position: absolute; left: 50%; bottom: 100%;
+    /* 2026-10-22 哥哥：「气泡应该再离些小星辰近一点」。原来 54px 是为了躲开
+       头顶双体力条，结果离得太远，像挂在屏幕上而不是她说的。
+       改成 6px 贴着盒子顶边 —— .av 里人物头顶本来就有约 5% 的留白，
+       视觉上就是刚好在她头顶上一点。和双条偶尔重叠可以接受（很少同时出现）。 */
+    margin-bottom: 6px;
+    transform: translateX(-50%);
+    /* ⚠️ width: max-content 不能省。absolute + left:50% 时元素的可算宽度只有
+       父宽的一半（300px 的 .av 只剩 150px），文字会被硬折成两行、
+       第一行还塞不下 —— 2026-10-22 实测气泡只有 123px 宽就是这个原因。
+       max-content 让宽度按内容撑，再靠 max-width 兜住，换行只发生在 \n 上。 */
+    width: max-content;
+    max-width: 264px;
+    /* 2026-10-22 哥哥：「照抄 live2D 官方那个聊天气泡」。
+       官方 demo 的气泡是很朴素的：纯白底、细描边、小圆角、浅阴影，
+       不去追"毛玻璃 / 大投影"那种现代 UI 味 —— 它本来就该像漫画的对话泡。 */
+    padding: 8px 14px;
+    border-radius: 12px;
+    border: 1.5px solid rgba(60, 80, 110, .30);
+    background: #fff;
+    color: #1b2540;
+    font: 15px/1.55 XingchenLocal, XingchenKuaiLe, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    text-align: center;
+    white-space: pre-line;
+    box-shadow: 0 4px 14px rgba(18, 28, 58, .16);
+    pointer-events: none;
+    animation: bubIn .34s cubic-bezier(.2, .95, .3, 1.25) both;
+  }
+  /* 小尖角：往下指她。border 画三角形，颜色跟气泡底一致 */
+  /* 小尖角两层叠：外层走描边色、内层走白底，正好把气泡那圈描边接下去。
+     只画一层的话尖角会是"没有边框的一撮白"，和气泡本体对不上。 */
+  .bub::before,
+  .bub::after {
+    content: ''; position: absolute; left: 50%; top: 100%;
+    border: 7px solid transparent; border-bottom: 0;
+  }
+  .bub::before { margin-left: -8px; border-width: 8px 8px 0; border-top-color: rgba(60, 80, 110, .30); }
+  .bub::after  { margin-left: -7px; border-top-color: #fff; }
+  /* ── 悬停显示会话名（2026-10-22 哥哥要的）──────────────
+     用 :hover 而不是原生 title：这是透明置顶窗口，原生 tooltip 不靠谱。
+     和气泡同一个锚点（头顶上方），两者很少同时出现。 */
+  /* ── 活动气泡（2026-10-22 哥哥要的，抄 Coopanion 的 Activity bubbles）──
+     把「正在读文件 / 正在跑命令」摊在她头顶 —— 比干看体力条直观得多。
+     和悬停名同一个锚点：同时出现时名字盖在上面（悬停那一刻"她是谁"更重要）。 */
+  /* ── 脚下那一行：会话名 + 她此刻在干什么 ────────────────────────
+     2026-10-23 哥哥：「正在做什么的气泡与体力条重合了。把它移到会话名称的正右边吧。」
+     以前 .act 和体力条同在头顶（bottom:100%），点她一下弹出体力条就压在气泡上。
+     现在两个胶囊一起住在 .tags 这一行 flex 里，名字在左、气泡在右，贴着脚。
+     ⚠️ 别再让任何一个单独 left:50% —— 那样两个各自居中，还是会叠在一起。 */
+  .av .tags {
+    /* ⚠️ 用 bottom 锚、不要用 top（2026-10-23 自己栽的）：
+       改成竖排以后「名字在上、气泡在下」，内容会往**下**长。写 top:95% 时
+       气泡正好长到窗口底边以外 —— body 是 overflow:hidden，直接裁没，
+       表现是"明明在干活，气泡却不见了"。
+       改成贴着 el 底边、内容向上展开，就永远不会掉出窗口。 */
+    position: absolute; left: 50%; bottom: 0;
+    margin-bottom: 2px;
+    transform: translateX(-50%);
+    /* 2026-10-23 哥哥第二次调：「还是把正在做的气泡放在会话名称气泡的下面一点刚好」。
+       横排放不下 —— 名字最长 260px，气泡再来一句「正在做 X」就被挤成「插…」了。
+       改成竖排：名字在上、气泡在下，各自居中对齐，谁也不压谁。 */
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    max-width: 320px;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .av .act {
+    flex: 0 0 auto;
+    padding: 3px 12px;
+    border-radius: 999px;
+    background: rgba(14, 22, 40, .68);
+    border: 1px solid rgba(150, 195, 255, .28);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    color: #cfe2ff;
+    font: 14px/1.5 XingchenLocal, XingchenKuaiLe, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .22s ease;
+  }
+  .av .act[data-on="1"] { opacity: 1; }
+
+  /* ── 按住说话时头顶那条浮层（2026-10-23）────────────────────────
+     意图和活动气泡一样：让她"正在听你说"这件事看得见。
+     那条 wave 的宽度吃 --lv（回调里按峰值实时改），不说话时也留个底。 */
+  .av .mic {
+    position: absolute; left: 50%; bottom: 100%;
+    margin-bottom: 8px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px;
+    max-width: 300px; padding: 6px 13px 6px 11px;
+    border-radius: 999px;
+    background: rgba(14, 22, 40, .78);
+    border: 1px solid rgba(150, 195, 255, .38);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .34);
+    color: #dcebff;
+    font: 15px/1.45 XingchenLocal, XingchenKuaiLe, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    pointer-events: none;
+    animation: micIn .18s ease both;
+  }
+  .av .mic .wave {
+    flex: 0 0 auto; width: 26px; height: 6px; border-radius: 3px;
+    background: linear-gradient(90deg, #7fc8ff var(--lv, .2), rgba(120, 170, 255, .18) 0);
+    transition: background .1s linear;
+  }
+  .av .mic .txt {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  @keyframes micIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.94); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  }
+
+  .av .name-tag {
+    /* 2026-10-23 哥哥：「会遮住喵，把会话名称移到角色下方吧」。
+       定位已经交给父元素 .tags（见上），这里只管自己的长相和淡入淡出。 */
+    flex: 0 0 auto;
+    max-width: 260px;
+    padding: 3px 12px;
+    border-radius: 999px;
+    background: rgba(14, 22, 40, .72);
+    border: 1px solid rgba(150, 195, 255, .32);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    color: #dcebff;
+    font: 14px/1.5 XingchenLocal, XingchenKuaiLe, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity .16s ease, transform .16s ease;
+  }
+  /* 悬停显示；另外「有活动在跑」时也强制显示 —— 哥哥要的是"会话名的正右边"，
+     名字不露面的话这句话就无从谈起。 */
+  .av:hover .name-tag, .av[data-act="1"] .name-tag { opacity: 1; transform: translateY(0); }
+  /* 摸头计数徽章（2026-10-24 哥哥要的）：透明底、挂在她右侧。
+     用它的原因很实在 —— 之前"摸了几次"完全看不见，50/100 那两句到底有没有触发，
+     只能靠猜。有这个 ×N 一眼就知道。 */
+  .pat-badge {
+    position: absolute;
+    left: calc(100% - 34px);
+    top: 48%;
+    transform: translateY(-50%);
+    padding: 3px 14px;
+    border-radius: 999px;
+    background: rgba(10, 18, 30, .42);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+    color: #fff;
+    /* 2026-10-24 哥哥说 ×4 太小 —— 14px 顶到 21px，padding 也加一档 */
+    font: 700 21px/1.45 Bahnschrift, "Segoe UI", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, .75);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .2s ease;
+    white-space: nowrap;
+  }
+  .pat-badge[data-on="1"] { opacity: .9; }
+
+  .bub[data-out="1"] {
+    animation: none; opacity: 0;
+    transform: translateX(-50%) translateY(-7px) scale(.94);
+    transition: opacity .26s ease, transform .26s ease;
+  }
+  @keyframes bubIn {
+    0%   { opacity: 0; transform: translateX(-50%) translateY(9px) scale(.82); }
+    62%  { opacity: 1; transform: translateX(-50%) translateY(-2px) scale(1.04); }
+    100% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  }
+  /* 小条按比例收窄，贴在大条下面 —— 主次一眼看得出来 */
+  /* 2026-10-22 晚：原来 margin-top:2px，两条之间空着约 19px（素材上下各有 17% 透明留白），
+     哥哥看示意图要的是**重叠**。14.38% 是算出来的：大条高 0.215W，两条各让出 0.1686 的留白，
+     再咬进去 0.07 × 大条高。百分比 margin 按包含块**宽度**算，所以 14.38% = 0.1438 × --hp-w。
+     别改成固定 px —— 改 --hp-w 就全错位了。 */
+  /* 2026-10-22 晚：哥哥要两条**咬合**（示意图里它们是叠在一起的）。
+     这条路走过三版，别重走：
+     ① margin-top:2px —— 两条之间空着约 19px；
+     ② -8.39%（让底板贴住）—— 盒子重叠了，但大条底部装饰板横在中间，
+        小条露出来的第一个像素永远是 0.837h，看着还是远；
+     ③ -12.21% + 裁掉小条顶板 —— 胶囊贴死了，哥哥说「太近」。
+     现在这版：-9.68%，小条顶层装饰板的顶沿刚好擦过大条胶囊底沿（0.640h_b），
+     两条胶囊之间留 0.118h —— 看得出是两条，又咬得很近。
+     算法：小条图顶 = h_b + margin，顶板顶再加 0.180×0.55h_b = 0.099h_b，
+     要它 ≈ 0.649h_b → margin = -0.45h_b = -0.45×0.215W。
+     百分比 margin 按包含块**宽度**算，所以 -9.68% = -0.0968 × --hp-w。
+     别改成固定 px —— 改 --hp-w 就全错位了。 */
+  .hp-stack img.hp-small {
+    width: var(--hp-sub, 55%);
+    margin-top: -9.68%;
+    /* 2026-10-22 晚：哥哥要两条最左端一致。素材左右各 7.37% 是透明留白，
+       小条缩到 55% 后留白也缩了，图片左对齐会让胶囊探头 3.32%。
+       这里补回差值，写成 calc 跟着 --hp-sub 走。 */
+    margin-left: calc(7.37% - var(--hp-sub, 55%) * 0.0737);
+  }
+  /* 小条在上层：它的胶囊要能压住大条的底板，而不是被底板挡住。
+     两个都是 inline 流里的 img，z-index 得先有 position 才生效。 */
+  .hp-stack img { position: relative; }
+  .hp-stack img:not(.hp-small) { z-index: 1; }
+  .hp-stack img.hp-small { z-index: 2; }
+  @keyframes hpPop {
+    0%   { opacity: 0; transform: translateY(18px) scale(.5); }
+    50%  { opacity: 1; transform: translateY(-4px) scale(1.12); }
+    72%  { transform: translateY(0) scale(.965); }
+    88%  { transform: translateY(0) scale(1.025); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .hp-stack[data-out="1"] {
+    /* 收回也走 keyframes，不用 transition。
+       上一版写的是 `animation:none` + transition，问题在于：一撤 animation，
+       元素会先**瞬间跳回完全显示**（keyframes 的终态没了），然后过渡才开始 ——
+       哥哥看到的就是"渐隐没了、直接消失"。 */
+    animation: hpRetract .42s cubic-bezier(.4, 0, .25, 1) forwards;
+  }
+  /* 往她头顶那个点收进去再淡掉：
+     transform-origin 是 50% 100%（底边中点），所以 scale 缩小 = 向下收拢；
+     再叠一点 translateY 往下沉，是"缩回身体里"而不是"原地蒸发"。 */
+  @keyframes hpRetract {
+    0%   { opacity: 1;   transform: translateY(0)    scale(1); }
+    30%  { opacity: .95; transform: translateY(6px)  scale(.92); }
+    100% { opacity: 0;   transform: translateY(30px) scale(.42); }
+  }
+
+  /* 右键菜单 —— 大小 / 配色 / 动作 / 变回体力条 */
+  #menu {
+    position: fixed; display: none; z-index: 90; min-width: 136px; padding: 7px;
+    /* 2026-10-22 哥哥要求：背景 72%，透一点才像原生菜单 */
+    background: rgba(22,28,42,.72);
+    color: #dbe3f0;
+    border: 1px solid rgba(120,150,220,.28); border-radius: 12px;
+    box-shadow: 0 12px 36px rgba(0,0,0,.42);
+    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    font: 15px/1.6 XingchenLocal, XingchenKuaiLe, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  }
+  #menu[data-open="1"] { display: block; }
+  /* 顶层项：一行一个、右边带 ›。窄条 + 子菜单横着飞，比之前那种大面板省地方得多 */
+  #menu .item {
+    position: relative; display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 9px; border-radius: 8px; cursor: pointer; white-space: nowrap; gap: 16px;
+  }
+  #menu .item:hover { background: rgba(90,130,220,.28); }
+  #menu .item .arrow { opacity: .38; font-size: 13.5px; }
+  /* 父项右边那 10px 是隐形桥：鼠标从父项挪去子菜单的半路不能掉出 :hover，
+     掉了子菜单就当场消失，手感会很差 */
+  #menu .item.has-sub::after {
+    content: ""; position: absolute; left: 100%; top: 0; width: 10px; height: 100%;
+  }
+  #menu .sub {
+    position: absolute; left: 100%; top: -6px; z-index: 91;
+    display: none; padding: 7px; min-width: 214px;
+    background: rgba(22,28,42,.88);
+    border: 1px solid rgba(120,150,220,.26); border-radius: 12px;
+    box-shadow: 0 12px 36px rgba(0,0,0,.45);
+    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  }
+  #menu .item:hover > .sub { display: block; }
+  /* 贴着屏幕右边时子菜单往左弹 */
+  #menu[data-flip="1"] .sub { left: auto; right: 100%; }
+  #menu[data-flip="1"] .item.has-sub::after { left: auto; right: 100%; }
+  #menu .sub .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 8px; cursor: pointer;
+  }
+  #menu .sub .row:hover { background: rgba(90,130,220,.22); }
+  #menu input[type=range] { flex: 1; accent-color: #6f8fe8; min-width: 92px; }
+  #menu .val { min-width: 32px; text-align: right; opacity: .7; }
+  #menu .sw { display: flex; flex-wrap: wrap; gap: 7px; padding: 4px 6px; max-width: 214px; }
+  #menu .sw button {
+    width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+    border: 2px solid rgba(255,255,255,.18); padding: 0;
+  }
+  #menu .sw button[data-on="1"] { border-color: #fff; transform: scale(1.12); }
+  /* 动作 / 表情 / 走动 —— 子菜单里排三列小按钮 */
+  #menu .acts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 3px 4px; }
+  #menu .acts.single { grid-template-columns: 1fr; }
+  #menu .acts button {
+    padding: 4px 6px; border-radius: 7px; cursor: pointer;
+    font: inherit; font-size: 13.5px; line-height: 1.25; white-space: nowrap;
+    color: #dbe3f0; background: rgba(58,76,116,.5);
+    border: 1px solid rgba(255,255,255,.14);
+  }
+  #menu .acts button:hover { background: rgba(90,130,220,.55); }
+  #menu .acts button:active { transform: scale(.93); }
+  #menu .acts button[data-on="1"] { background: rgba(108,146,238,.8); border-color: #fff; }
+  #menu .sep { height: 1px; margin: 5px 8px; background: rgba(255,255,255,.12); }
+  #menu .danger { color: #ffb4a8; }
+  #err {
+    position: fixed; left: 10px; bottom: 10px; max-width: 56vw;
+    color: #ff8b8b; background: rgba(10,14,24,.82); padding: 8px 10px;
+    border-radius: 8px; white-space: pre-wrap; display: none;
+    font: 12px/1.55 ui-monospace, monospace;
+  }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<div id="menu"></div>
+<script>
+(function () {
+  'use strict';
+
+  const q = new URLSearchParams(location.search);
+  const PORT = Number(q.get('port') || 0);
+  const ROUTE = q.get('route') || '/stamina-pet';
+  if (!PORT) return;
+
+  const API = 'http://127.0.0.1:' + PORT + ROUTE;
+
+  // UI 字体：两条都声明。
+  //   XingchenLocal   —— 用户自备（assets/fonts/local/），默认不存在，404 就静默跳过
+  //   XingchenKuaiLe  —— 内置的站酷快乐体，免费商用，一定在
+  // 桌面层是 file:// 页面，CSS 里的相对路径不认，所以这里用 API 的绝对地址注入。
+  (() => {
+    const st = document.createElement('style');
+    st.textContent =
+      '@font-face{font-family:XingchenLocal;src:url(' + API + '/font/local/HKFangYuanW7.ttf) format("truetype");font-display:swap}'
+      + '@font-face{font-family:XingchenKuaiLe;src:url(' + API + '/font/ZCOOLKuaiLe-Regular.ttf) format("truetype");font-display:swap}';
+    document.head.appendChild(st);
+  })();
+
+  /** 每只大肥鱼的方框边长。她的活动范围就这么大，所以她是在"自己那块地"里走。 */
+  /** 调试日志：走 preload → IPC → 主进程写文件（CC_LOG）。没有就静默跳过。 */
+  function dbg(msg) {
+    try { window.ccDesktop && window.ccDesktop.log && window.ccDesktop.log(msg); } catch { /* 无所谓 */ }
+  }
+
+  const AV_PX = 300;
+  const AV_LIMIT = 6;
+  /** 头顶体力条的默认宽度（px）。右键菜单里能按只改，改完记在 rec.hpW 上。 */
+  const HP_W = 300;
+  /**
+   * 轮询宿主「谁在桌面上」的间隔。
+   *
+   * 400ms —— 点完体力条要马上看见她升起来，3 秒的空等太明显。请求打的是本机
+   * 127.0.0.1、返回体只有一百多字节，这点开销无所谓。
+   */
+  const POLL_MS = 400;
+  /** 上次给宿主报活的时间。宿主那边有看门狗，长时间收不到就重启我们。 */
+  let lastBeatSent = 0;
+  const BEAT_MS = 30000;
+  /** 上报命中矩形的间隔。主进程 60ms 轮询一次光标，这里 90ms 足够跟手。 */
+  // 90ms 是她走动时「点空」的主因：一帧之内挪出旧框，主进程就判未命中。
+  // 50ms 只是多一倍的小 IPC（一次几十字节），换来走动着也能点中。
+  const HIT_MS = 50;
+
+  const errEl = document.getElementById('err');
+  function showErr(e) {
+    const msg = String((e && (e.stack || e.message)) || e);
+    errEl.style.display = 'block';
+    errEl.textContent = msg + (errEl.textContent ? '\n' + errEl.textContent : '');
+    // ⚠️ 光画在页面上等于没有 —— 那个 #err 压在透明窗口左下角，平时根本注意不到，
+    // 出了问题看日志却是一片干净。错误必须同时进桌面日志，否则就是盲飞。
+    try { dbg('❌ 页面错误: ' + msg.replace(/\n/g, ' ⏎ ').slice(0, 600)); } catch { /* 无所谓 */ }
+  }
+  addEventListener('error', (e) => showErr(e.message || e.error));
+  addEventListener('unhandledrejection', (e) => showErr(e.reason));
+
+  /** sessionId -> { el, ctl, info, tier, userPos } */
+  const box = new Map();
+  /**
+   * 正在退场的那些。
+   *
+   * 点一下她 → 本地立刻播退场动画、从 DOM 拿掉 → 同时 POST 告诉宿主「下桌」。
+   * 但下一拍轮询可能在 POST 到宿主**之前**就跑完，那时宿主还认为她在桌上 ——
+   * 于是"刚消失又冒出来"。这个 Set 就是用来挡住那一下的：退场期间不接受复现。
+   */
+  const pendingOut = new Set();
+  let dragging = null;
+
+  /**
+   * 把所有人排到地面上（一排居中）。
+   *
+   * 两个例外：
+   *   · `userPos` 有值 = 哥哥亲手拖过，不动她；
+   *   · `dropFrom` 有值 = 刚出生、等着从体力条掉下来。**渲染好之前绝不能碰她的位置**
+   *     （那时候她 opacity:0，摆了也是白摆，还会把出生点冲掉），渲染好的那一刻
+   *     onReady 会自己再喊一次 layout，这一次才真的从出生点掉落。
+   */
+  function layout() {
+    const n = box.size;
+    if (!n) return;
+    const W = window.innerWidth, H = window.innerHeight;
+    const gap = 18;
+    const total = n * AV_PX + (n - 1) * gap;
+    let x = Math.max(12, (W - total) / 2);
+    const top = Math.max(12, H - AV_PX - 14);
+    for (const rec of box.values()) {
+      const slotX = x;
+      x += AV_PX + gap;   // 占位先扣，后面每个 continue 都不影响别人的位置
+      if (rec.userPos) continue;   // 哥哥亲手拖过的不动
+      const tx = Math.round(slotX);
+      const ty = Math.round(top);
+      if (rec.dropFrom) {
+        // 还没显形：原地待命，等 onReady 再来
+        if (rec.el.getAttribute('data-ready') !== '1') { dbg('layout skip id=' + rec.id + ' (not ready)'); continue; }
+        // 显形了：从体力条掉到地面。
+        // ⚠️ 用 WAAPI 播关键帧，不用 CSS 过渡 —— 关键帧是显式给定的，从第一帧就播，
+        // 不依赖"上一帧的样式"，在这套透明置顶窗口里比 transition 可靠得多。
+        const from = rec.dropFrom;
+        rec.dropFrom = null;
+        rec.el.style.left = tx + 'px';
+        rec.el.style.top = ty + 'px';
+        const dy = Math.abs(ty - from.y);
+        dbg(`drop id=${rec.id} from=(${from.x},${from.y}) to=(${tx},${ty}) dy=${dy}`);
+        try {
+          rec.el.animate([
+            { left: from.x + 'px', top: from.y + 'px' },
+            { left: tx + 'px', top: ty + 'px' },
+          ], {
+            duration: Math.min(1100, Math.max(420, dy * 0.85)),
+            easing: 'cubic-bezier(.3,1.25,.5,1)',
+          });
+        } catch (err) { dbg('animate FAIL id=' + rec.id + ' ' + err); }
+        continue;
+      }
+      rec.el.style.left = tx + 'px';
+      rec.el.style.top = ty + 'px';
+    }
+  }
+
+  function destroy(rec) {
+    // 她走了，头顶那条排队要收的体力条也别再等了
+    if (rec.hpTimer) { clearTimeout(rec.hpTimer); rec.hpTimer = null; }
+    // 活动气泡那个收尾倒计时同理，别让它在一个已经删掉的元素上跑
+    if (rec.actTimer) { clearTimeout(rec.actTimer); rec.actTimer = null; }
+    try { rec.ctl && rec.ctl.dispose(); } catch { /* 已经没了 */ }
+    try { rec.el.remove(); } catch { /* 同上 */ }
+  }
+
+  function makeAvatar(id, info) {
+    const el = document.createElement('div');
+    el.className = 'av';
+    el.style.width = AV_PX + 'px';
+    el.style.height = AV_PX + 'px';
+    el.setAttribute('data-sid', id);
+    // 出生点 = 那条体力条在屏幕上的位置（宿主把单击时的 x/y 转给了我们）。
+    // 先停在这儿**一帧**，下一步再交给 layout() 排到地面上 —— 中间这段位移就是「掉落」，
+    // 配合渲染器自己的 enter:'drop'，看起来就是她从那根条里掉到桌面上。
+    // 出生点：只记下来、把盒子先摆在那儿，**不显形**。
+    //
+    // ⚠️ 这里踩了四次的坑，记清楚：她出生时 `opacity: 0`，要等 Live2D 渲染器
+    // 就绪、`onReady` 打上 `data-ready="1"` 才可见 —— 而那要花几百毫秒到一两秒。
+    // 之前把"从体力条掉到地面"写成一段 0.5s 的 CSS 过渡，它**整段都在透明期播完**，
+    // 哥哥看到的一定是"她已经站在地面上了"，提了四次都没修好就是这个原因：
+    // 不是坐标错，也不是过渡没触发，是**动画播给谁看的问题**。
+    // 现在改成：就绪那一刻才显形 + 那一刻才开始掉落（见 onReady 和 layout）。
+    const bornFrom = Number.isFinite(info.x) && Number.isFinite(info.y)
+      ? { x: Math.round(info.x - AV_PX / 2), y: Math.round(info.y - AV_PX / 2) }
+      : null;
+    if (bornFrom) {
+      el.style.left = bornFrom.x + 'px';
+      el.style.top = bornFrom.y + 'px';
+      el.setAttribute('data-born', '1');
+    }
+    dbg(`born id=${id} raw=(${info.x},${info.y}) box=(${bornFrom ? bornFrom.x : 'null'},${bornFrom ? bornFrom.y : 'null'}) win=${window.innerWidth}x${window.innerHeight}`);
+    // 悬停浮出的小胶囊：写这个化身对应哪个会话（2026-10-22 哥哥要的）。
+  // 标题为空的一律退回 sessionId 尾段，总比什么都不显示强。
+  const tags = document.createElement('div');
+  tags.className = 'tags';
+  const tag = document.createElement('div');
+  tag.className = 'name-tag';
+  tag.textContent = String(info.title || '').trim() || ('会话 …' + String(id).slice(-6));
+  tags.appendChild(tag);
+  el.appendChild(tags);
+  // 摸头计数徽章：这个会话被摸过几次就摆几次（只有内存里那一份，重启归零）。
+  const patBadge = document.createElement('div');
+  patBadge.className = 'pat-badge';
+  { const n0 = readPatCount(id); dbg(`pat 账本 ${String(id).slice(0, 16)} = ${n0}`); if (n0 > 0) { patBadge.textContent = '×' + n0; showPatBadge(patBadge); } }
+  el.appendChild(patBadge);
+  document.body.appendChild(el);
+
+    const rec = {
+      id, el, ctl: null, info, tier: info.tier || 'ok', userPos: null,
+      /** 待落地的起点；layout 用它当动画起点，落完置 null。非空期间 layout 不摆她。 */
+      dropFrom: bornFrom,
+      px: AV_PX,            // 右键菜单能改，改了就地 resize
+      hpW: HP_W,            // 头顶那条体力条的宽度，也归右键菜单管
+      scheme: 'deepseek',   // 当前配色，切过的会记在这儿
+      outfit: 'maid',       // 当前服装；斗篷要等图标做出来再放开
+      hpTimer: null,
+    };
+    box.set(id, rec);
+
+    const api = window.__CC_LIVE2D;
+    if (!api || typeof api.create !== 'function') {
+      showErr(new Error('渲染器没加载上（window.__CC_LIVE2D 不存在）'));
+      return rec;
+    }
+    try {
+      rec.ctl = api.create({
+        root: el,
+        px: AV_PX,
+        tier: rec.tier,
+        // 非原版贴图（7 套配色 + 斗篷）走这个前缀按需取，见 bundle 里 asset 那段注释
+        assetBase: API + '/live2d/whale/',
+        onReady: () => {
+          dbg(`ready id=${id} t=${performance.now().toFixed(0)}ms dropFrom=${rec.dropFrom ? rec.dropFrom.x + ',' + rec.dropFrom.y : 'null'}`);
+          // 哥哥 2026-10-23 定：点体力条把她召唤下来、她现身那一刻说一句「我来了」。
+          // 放 onReady 而不是 makeAvatar 开头 —— 那时渲染器还没画出来，
+          // 声音会先于她出现，看着像空气在说话。
+          playVoice('hello');
+          el.setAttribute('data-ready', '1');   // 到这一刻她才看得见
+          // 刚上场就按当前上下文量摆好姿势（清醒 / 打盹 / 坐着睡 / 趴着睡）
+          syncMood(rec);
+          // 渲染器说好了不算数 —— 得看它真有没有画布、画布上**有没有像素**。
+          // Windows 上透明窗口的命中测试是逐像素的：canvas 如果全透明，
+          // 就算 setIgnoreMouseEvents(false) 点击照样穿过去（这就是"点了没反应"的机理），
+          // 所以这里必须把像素值记下来。
+          setTimeout(() => {
+            try {
+              const cv = el.querySelector('canvas');
+              const r = el.getBoundingClientRect();
+              let px = '无canvas';
+              if (cv) {
+                try {
+                  const gl = cv.getContext('webgl2') || cv.getContext('webgl');
+                  if (gl) {
+                    const buf = new Uint8Array(4);
+                    gl.readPixels(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+                    px = `rgba(${buf[0]},${buf[1]},${buf[2]},${buf[3]})`;
+                  } else { px = '拿不到gl'; }
+                } catch (e2) { px = '读失败:' + e2.message; }
+              }
+              dbg(`诊断 id=${id.slice(0, 8)} canvas=${cv ? cv.width + 'x' + cv.height : '无'} 中心像素=${px} 盒子=${Math.round(r.width)}x${Math.round(r.height)}@(${Math.round(r.left)},${Math.round(r.top)}) dpr=${window.devicePixelRatio} dataout=${el.getAttribute('data-out')} ready=${el.getAttribute('data-ready')} pe=${getComputedStyle(el).pointerEvents}`);
+            } catch (e) { dbg('诊断失败: ' + e.message); }
+          }, 800);
+          // 显形之后**立刻**排一次版：layout 看到 dropFrom 还没清，就从出生点掉到地面。
+          // 这一步是整件事的关键 —— 早一帧她还没显形，晚一帧她已经站在地面。
+          layout();
+        },
+        onError: (e) => showErr(e),
+      });
+    } catch (e) {
+      showErr(e);
+    }
+    return rec;
+  }
+
+  /**
+   * 注意力指标 → 血量百分比。
+   *
+   * 和 client.js 里那条**同一套口径**：黄线以下算满血（那是正常状态），红线归零，
+   * 中间线性。宿主只把原始指标（peak / yellow / red）发过来，换算放在两端各做一次 ——
+   * 宁可多写十行，也不让宿主和 client 各存一份"算出来的血量"、哪天改了忘了一头。
+   */
+  function gaugeHp(peak, yellow, red) {
+    const p = Number(peak) || 0;
+    const y = Number(yellow) || 8;
+    const r = Number(red) || 20;
+    if (r <= y) return p >= r ? 0 : 100;
+    if (p >= r) return 0;
+    if (p <= y) return 100;
+    return Math.round((100 * (r - p)) / (r - y));
+  }
+
+  function tierOf(hp) {
+    if (hp <= 0) return 'zero';
+    if (hp < 30) return 'bad';
+    if (hp < 60) return 'low';
+    return 'ok';
+  }
+
+  /**
+   * 两条指标合成一个「累度」——**已废弃，2026-10-23 哥哥明确：五个档位只看上下文（大条）**。
+   * 留着占位容易再被人拐去用，所以这里只写结论：健康度（小条）只做显示，不驱动任何姿势。
+   */
+
+  /**
+   * 按「上下文已用 %」把她摆成六种姿势之一。
+   *
+   * 渲染器现成能表达四种：
+   *   0    清醒
+   *   35~  半睁眼打盹（`sleepy` 表情；它 4.4 秒自己消退，所以隔一阵补一次）
+   *   65~  坐着睡（`sit`）
+   *   85~  趴着睡（`prone`；2026-10-23 新给渲染器加的姿态 —— 整个人转到地上，脸侧贴地闭眼）
+   *
+   * ⚠️ 「站着睡」渲染器里**没有这个姿势**。按哥哥给的退路：65 直接坐下、80 趴下
+   * （阈值在设置页可改）。中间的 50 / 75 两档先留着 —— 等以后真给 kit 加上
+   * 「站着打个盹」和「更重的疲惫」再用。
+   */
+  /** 五档的名字。索引就是档位，别改顺序 —— 面板和姿势都按这个来。 */
+  const MOOD_NAMES = ['精神抖擞', '无精打采', '疲惫', '坐着睡', '趴着睡'];
+
+  /**
+   * 按上下文已用 % 算档位（0~4）。
+   * 只需要 4 个分界点，用 thresholds 的前四个；第五个（moodTier5）留给以后加档。
+   */
+  function moodOf(pct, tiers) {
+    const t = Array.isArray(tiers) && tiers.length >= 4 ? tiers : [35, 50, 65, 75, 85];
+    if (pct >= t[3]) return 4;
+    if (pct >= t[2]) return 3;
+    if (pct >= t[1]) return 2;
+    if (pct >= t[0]) return 1;
+    return 0;
+  }
+
+  /**
+   * 按「上下文已用 %」给她摆姿势，并在档位内维持那股劲儿。
+   *
+   * 2026-10-23 哥哥把五个档位各自该有的表现重新定了一遍，逐档对应：
+   *
+   *   0 精神抖擞   站直 + 清回中性脸。**困的表情一次都不给**，其余全交给她自己。
+   *   1 无精打采   站着半睁眼。困的表情 8~14 秒来一次，**别的表情和动作照常**。
+   *   2 疲惫       坐下、半睁眼、不爱动。困得更密（5~9 秒），偶尔换个蔫表情；
+   *                动作其实已经归零了 —— 一坐下渲染器就 locked，随机池整个停摆。
+   *   3 坐着睡     完全静止，只冒一句「好困」。
+   *   4 趴着睡     完全静止。
+   *
+   * ⚠️ 档 2 千万别拿 `do('nod')` 这类**动作**去「换个姿势」——
+   * 渲染器里的动作是 pulse 模式，播完会回 idle，人会当场从坐变站。
+   * 坐着的微变化只能用**表情**做。
+   *
+   * ⚠️ 时间间隔全都加了随机抖动。固定节拍（比如死磕 10 秒）看起来像机器在打点，
+   * 人会立刻觉得假 —— 这也是哥哥之前嫌「表情太频繁」的真实原因之一。
+   */
+  function syncMood(rec) {
+    if (!rec || !rec.ctl || !rec.info) return;
+    // 活动气泡跟着每轮 sync 一起刷新（sync 一秒一次，够用了）
+    applyActivity(rec, rec.info.activity);
+    // 有活干的时候人也得动起来
+    syncBusy(rec, rec.info.activity);
+    // ⚠️ 2026-10-23 哥哥定：**五个档位只看上下文（大条）**，健康度（小条）不参与。
+    // 上一版我按「两者取较差」算，结果健康度 0% 就把她按成趴着睡，跟大条写着的精神抖擞
+    // 打架 —— 那是把两个指标混成了一个。小条归小条，只做显示。
+    const pct = Number(rec.info.usedPct) || 0;
+    const want = moodOf(pct, rec.info.moodTiers);
+    const now = Date.now();
+    // 她此刻**真实**的动作状态。光看档位不够 —— `do()` 可能被渲染器静默拒掉
+    // （还在掉落进场、还没 mount、或者正处在 air/crouch 那几帧），那样档位记了、
+    // 动作没发出去，人就再也不动了。2026-10-23 那句「明明精神抖擞却一直坐着睡」
+    // 就是这一类，所以把真实 mode 记进日志，下次一眼就能分清是"没发出去"还是"发了没画"。
+    if (now - (rec.statAt || 0) > 5000) {
+      rec.statAt = now;
+      try {
+        const L = rec.ctl.layout && rec.ctl.layout();
+        dbg(`stat sid=${rec.id.slice(0, 8)} want=${want} used=${pct}% mode=${L && L.mode}`);
+      } catch (e) { dbg('stat FAIL ' + ((e && e.message) || e)); }
+    }
+    if (rec.mood !== want) {
+      let ok = true;
+      try {
+        // 每一档都要先站定再摆姿势，否则从"趴着"直接切"坐着"会卡在半途
+        if (want === 4) ok = rec.ctl.do('prone') !== false;
+        else if (want === 3) ok = rec.ctl.do('sit') !== false;
+        else if (want === 2) { ok = rec.ctl.do('sit') !== false; rec.ctl.do('sleepy'); }
+        else if (want === 1) { ok = rec.ctl.do('stand') !== false; rec.ctl.do('sleepy'); }
+        // 档 0（精神抖擞）：站直 + **把表情清回中性**。
+        // 只 do('stand') 不够 —— 上一档残留的 sleepy 要 4.4 秒才自己退，
+        // 中间会看到她「明明是精神抖擞却还半睁着眼」（2026-10-22 哥哥报的就是这个）。
+        else { ok = rec.ctl.do('stand') !== false; rec.ctl.do('neutral'); }
+      } catch { ok = false; }
+      // ⚠️ 必须**动作真的发出去了**才记档位。原来先写 `rec.mood = want` 再 try，
+      // 一旦 `do('stand')` 被渲染器拒掉（掉落中/没 mount），档位却已经写成 0 ——
+      // 之后每秒都因为「档位没变」直接 return，她永远补不上那一下，就一直是睡的。
+      if (!ok) {
+        // 渲染器没收下（最典型：她还在入场掉落里，busy()=true）—— 档位不记，下个 tick 再试
+        dbg(`act REJECT sid=${rec.id.slice(0, 8)} want=${want} ${MOOD_NAMES[want]}`);
+        return;
+      }
+      // 记下动作发出去之后她**真实**变成了什么模式：这一步能把「没发出去」和
+      // 「发出去了、但转眼又被别的路径打回来」当场分开，不用再猜。
+      try {
+        const L2 = rec.ctl.layout && rec.ctl.layout();
+        dbg(`act sid=${rec.id.slice(0, 8)} want=${want} modeNow=${L2 && L2.mode}`);
+      } catch { /* 无所谓 */ }
+      // 刚掉进「坐着睡」那一刻说一句（2026-10-22 哥哥指定的台词）。
+      // 放在 ok 之后：没真坐下就别冒这句，否则重试会反复说。
+      if (want === 3) { showBubble(rec, '好困~上下文压的本小姐好累…'); playVoice('sleepy'); }
+      rec.mood = want;
+      rec.lastDoze = now;
+      rec.lastIdle = now;
+      dbg(`mood sid=${rec.id.slice(0, 8)} used=${pct}% → ${want} ${MOOD_NAMES[want]}`);
+      return;
+    }
+    // ── 档位不变时，维持这一档的持续表现 ───────────────────────
+    // 档 0：完全不插手。让她按自己的节奏走、跳、卖萌，困的表情一次都不给。
+    if (want === 0) return;
+    // 档 3 / 4：睡着的人是静止的 —— 哥哥的硬要求，别在这里加任何动作。
+    if (want >= 3) return;
+
+    if (want === 1) {
+      // 站着半睁眼：8~14 秒打一个哈欠。别的表情、动作由渲染器照常随机。
+      if (now - (rec.lastDoze || 0) > 8000 + Math.random() * 6000) {
+        rec.lastDoze = now;
+        try { rec.ctl.do('sleepy'); } catch { /* 无所谓 */ }
+      }
+      return;
+    }
+
+    // 档 2：坐着不爱动，困意更浓 —— 5~9 秒一次。
+    // ⚠️ 这里**不能 return**：哈欠间隔（5~9 秒）永远小于下面换表情的间隔，
+    // 一 return 就永远走不到换表情那一支，她会变成只会打哈欠的雕塑。
+    if (now - (rec.lastDoze || 0) > 5000 + Math.random() * 4000) {
+      rec.lastDoze = now;
+      try { rec.ctl.do('sleepy'); } catch { /* 无所谓 */ }
+    }
+    // 偶尔换个蔫表情，别让她像座雕塑。只用表情，别用动作（见函数头的警告）
+    if (now - (rec.lastIdle || 0) > 18000 + Math.random() * 12000) {
+      rec.lastIdle = now;
+      const FACES = ['worried', 'pout', 'confused', 'neutral'];
+      try { rec.ctl.do(FACES[Math.floor(Math.random() * FACES.length)]); } catch { /* 无所谓 */ }
+    }
+  }
+
+  function apply(list) {
+    const want = new Map();
+    for (const a of list.slice(0, AV_LIMIT)) {
+      if (!a || a.id == null) continue;
+      const hp = gaugeHp(a.peak, a.yellow, a.red);
+      want.set(String(a.id), {
+        id: String(a.id),
+        hp,
+        tier: tierOf(hp),
+        title: String(a.title || ''),
+        // ⚠️ 这两个字段**必须显式带上**。这里是重建对象、不是展开 a，漏一个字段就全没了。
+        // 早先只挑了 id/hp/tier/title，把宿主给的出生点 x/y 丢了 —— 于是 makeAvatar
+        // 永远拿到 undefined，dropFrom 恒为 null，她只能直接排在地面上。
+        // 2026-10-21 折腾了一整天的「她从地面冒出来」，根因就是这一行。
+        x: Number.isFinite(a.x) ? a.x : null,
+        y: Number.isFinite(a.y) ? a.y : null,
+        // 上下文已用量（双体力条的大条）。⚠️ 和上面 x/y 同一个坑：这是**重建对象**，
+        // 漏一个字段就全没了 —— 2026-10-21 那次「从地面冒出来」就是这么来的。
+        usedPct: Number.isFinite(a.usedPct) ? a.usedPct : 0,
+        // 六种状态的阈值（宿主 config 传下来），同样不能漏
+        moodTiers: Array.isArray(a.moodTiers) && a.moodTiers.length >= 5
+          ? a.moodTiers.map((v) => Number(v) || 0)
+          : [35, 50, 65, 75, 85],
+        // 她此刻在干什么（宿主给的 activity）。⚠️ 这里是**重建对象**，漏一个字段就全没了 ——
+        // 2026-10-23 哥哥报「我干活时她一点反应都没有」，根因就是这一行漏了 activity：
+        // /api/avatars 明明给了 {name:'pwsh'}，applyActivity 却永远收到 undefined。
+        activity: a.activity && typeof a.activity === 'object' ? a.activity : null,
+      });
+    }
+    for (const [id, rec] of Array.from(box)) {
+      if (!want.has(id)) { destroy(rec); box.delete(id); }
+    }
+    let born = false;
+    for (const [id, a] of want) {
+      if (pendingOut.has(id)) continue;   // 正在退场，别把她又变出来
+      const rec = box.get(id);
+      if (!rec) { makeAvatar(id, a); born = true; continue; }
+      rec.info = a;
+      if (a.tier && a.tier !== rec.tier) {
+        rec.tier = a.tier;
+        // 越累她越蔫：档位交给渲染器，内部每 4.5 秒推一次表情
+        try { rec.ctl && rec.ctl.setTier(a.tier); } catch { /* 还没就绪 */ }
+      }
+      // 上下文用量变了就换姿势（清醒 / 打盹 / 坐着睡 / 趴着睡）
+      syncMood(rec);
+    }
+    // 排位置这件事现在只有一个入口：layout()。
+    // 还在等渲染的新人会被它跳过（dropFrom 非空 + 没有 data-ready），
+    // 等 onReady 显形那一刻再喊一次 layout，那时才真的开始掉落。
+    // 别再在这里搞"恢复过渡 / 强制重排"那一套了 —— 那是在补救一个错误的前提。
+    requestAnimationFrame(layout);
+  }
+
+  // ── 头顶文字气泡 ─────────────────────────────────────────────────
+  // 提醒不再走 QQ，改成在这里冒一句话（2026-10-22 哥哥定）。
+  // 宿主把提醒攒在 /api/avatars 的 bubbles 里（倒序、带自增 id），
+  // 这里记住见过的最大 id，只冒新的。
+  let bubbleSeen = 0;
+  const bubbleTimers = new Map();   // sid -> 收起定时器
+
+  /**
+   * 工具名 → 一句人话。抄的是 Coopanion 的 Activity bubbles 那个思路：
+   * 别显示 "tool/call read"，要显示「正在读文件」。
+   * 没在表里的退回「正在做 <名字>」—— 插件出新的工具也不用改这里。
+   */
+  const ACT_TEXT = {
+    read: '正在读文件', write: '正在写文件', edit: '正在改文件',
+    glob: '正在找文件', grep: '正在翻文件',
+    pwsh: '正在跑命令', bash: '正在跑命令',
+    web_fetch: '正在看网页', web_search: '正在搜东西',
+    send_meme: '正在挑表情包', learn_meme: '正在学表情',
+    todo_write: '正在理清单', present: '正在递文件',
+    ask_user_question: '在等你回话',
+    reboot_dsh: '正在重启',
+    mnemon_recall: '正在翻记忆', mnemon_runtime_memory: '正在记东西',
+  };
+
+  /**
+   * 更新她头顶那句「正在干什么」。act 为 null = 空闲。
+   *
+   * ⚠️ 2026-10-23 哥哥：「工作气泡的持续时间有点短」。宿主的 activity 是**工具一结束就清空**的
+   * （lib/monitor.js 在 tool/result 上把 st.activity 置 null），所以原来一收工气泡立刻就没，
+   * 读个文件、跑条 pwsh 这种短命令几乎看不见。现在留一个尾巴：这段时间里没有再忙，
+   * 也让她把这句话显示完；真的又忙起来了就取消倒计时、直接换成新的一句。
+   */
+  const ACT_LINGER_MS = 4000;
+
+  function hideAct(rec) {
+    const el = rec.el && rec.el.querySelector('.act');
+    if (el) el.removeAttribute('data-on');
+    if (rec.el) rec.el.removeAttribute('data-act');
+  }
+
+  function applyActivity(rec, act) {
+    if (!rec || !rec.el) return;
+    const name = act && act.name ? String(act.name) : '';
+    if (!name) {
+      // 倒计时已经在走就别重排 —— sync 一秒一次，重排等于永远收不起来
+      if (rec.actTimer) return;
+      const el = rec.el.querySelector('.act');
+      if (!el || !el.hasAttribute('data-on')) { rec.el.removeAttribute('data-act'); return; }
+      rec.actTimer = setTimeout(() => { rec.actTimer = null; hideAct(rec); }, ACT_LINGER_MS);
+      return;
+    }
+    if (rec.actTimer) { clearTimeout(rec.actTimer); rec.actTimer = null; }
+    let el = rec.el.querySelector('.act');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'act';
+      // 和会话名同一行（名字在左、气泡在右），见 .tags 的注释
+      const row = rec.el.querySelector('.tags');
+      (row || rec.el).appendChild(el);
+    }
+    const text = ACT_TEXT[name] || ('正在做 ' + name);
+    if (el.textContent !== text) el.textContent = text;
+    el.setAttribute('data-on', '1');
+    // 「她在忙」—— 让会话名一起露出来，气泡才有"正右边"可言
+    rec.el.setAttribute('data-act', '1');
+  }
+
+  /**
+   * 她「正在干活」时的小动作。
+   *
+   * 2026-10-23 哥哥原话：「你在思考在运行时，你对应的小星辰并没有任何行动哦。」
+   * —— 光有头顶那句活动气泡还不够，人得动起来，不然就是个站在那儿的雕像。
+   *
+   * 两条规矩：
+   *  ① 只有醒着（档 0~2）才动。档 3/4 是坐睡/趴睡，哥哥明确要求那时**不做任何
+   *     其他动作和表情**，所以这里直接 return；
+   *  ② 动作只用不会打断站姿的那几个（点头/扑腾/张望/转身）—— 走路/跳会把她
+   *     从原地拽走，在干活的时候显得莫名其妙。
+   */
+  const BUSY_MOTIONS = ['nod', 'flap', 'look', 'nod', 'turn', 'nod', 'nod'];
+
+  function syncBusy(rec, act) {
+    if (!rec || !rec.ctl || !rec.info) return;
+    const busy = !!(act && act.name);
+    if (busy !== !!rec.busy) {
+      rec.busy = busy;
+      rec.busyAt = 0;
+      try {
+        // 刚忙起来先表态，一眼就看出她在干活；闲下来清回中性，别一直皱着眉
+        rec.ctl.do(busy ? 'determined' : 'neutral');
+      } catch { /* 还没就绪 */ }
+      return;
+    }
+    if (!busy) return;
+    // 档位口径跟 syncMood 一致：**只看上下文（大条）**，健康度不参与。
+    // ⚠️ 但这里必须跟 syncMood 用同一个数 —— 早先就是两处各算各的，一个判成档 4 让她趴下、
+    // 另一个判成档 0 每几秒发个 look 把她拽起来，看着像她自己在抽搐。
+    const want = moodOf(Number(rec.info.usedPct) || 0, rec.info.moodTiers);
+    if (want >= 3) return;   // 坐着睡 / 趴着睡：一动不动才是对的
+    // 2.6~4.8 秒来一下，带抖动 —— 固定节拍像机器在打点
+    if (Date.now() - (rec.busyAt || 0) < 2600 + Math.random() * 2200) return;
+    rec.busyAt = Date.now();
+    try { rec.ctl.do(BUSY_MOTIONS[Math.floor(Math.random() * BUSY_MOTIONS.length)]); } catch { /* 无所谓 */ }
+  }
+
+  /**
+   * 让她的嘴跟着「说」一段时间（LipSync）。
+   *
+   * 渲染器的 talk() 只做一件事：把 talkK 打到 1，然后每帧衰减 —— 也就是张嘴一下。
+   * 所以「说话」= 每隔一小会儿拍一次 talk()。间隔随机是刻意的：
+   * 固定节拍像机器人在念稿，120~260ms 抖动才像人在讲话。
+   *
+   * 时长按字数估（每字 180ms，最短 1.2 秒）—— 短句说得利索，长句多动一会儿。
+   */
+  function speakFor(rec, text) {
+    if (!rec || !rec.ctl) return;
+    const chars = [...String(text || '')].length;
+    const until = Date.now() + Math.max(1200, chars * 180);
+    const tick = () => {
+      if (Date.now() > until || !rec.ctl) return;
+      try { rec.ctl.talk(); } catch { /* 渲染器可能已经卸了 */ }
+      setTimeout(tick, 120 + Math.random() * 140);
+    };
+    tick();
+  }
+
+  function showBubble(rec, text) {
+    if (!rec || !rec.el || !text) return;
+    const old = rec.el.querySelector('.bub');
+    if (old) old.remove();          // 同一只身上只留一个泡
+    const el = document.createElement('div');
+    el.className = 'bub';
+    el.textContent = text;
+    rec.el.appendChild(el);
+    // 冒泡泡的同时嘴动起来 —— 这才是「说话」，不是「举牌子」
+    speakFor(rec, text);
+    dbg('bubble sid=' + rec.id.slice(0, 8) + ' ' + String(text).replace(/\n/g, ' / '));
+    const prev = bubbleTimers.get(rec.id);
+    if (prev) clearTimeout(prev);
+    // 6.5 秒够读完两行；收起后 320ms 是淡出动画的时长
+    bubbleTimers.set(rec.id, setTimeout(() => {
+      bubbleTimers.delete(rec.id);
+      el.setAttribute('data-out', '1');
+      setTimeout(() => el.remove(), 320);
+    }, 6500));
+  }
+
+  /**
+   * 处理宿主带回来的气泡队列。
+   * ⚠️ 一次只冒**最新**的那条：连着崩十次堆十个气泡没有意义，反而看不清。
+   * 但所有 id 都要标记成"看过"，否则下一轮又会被当成新的。
+   */
+  function applyBubbles(list) {
+    if (!Array.isArray(list) || list.length === 0) return;
+    const fresh = list
+      .filter((b) => b && Number(b.id) > bubbleSeen)
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    if (fresh.length === 0) return;
+    bubbleSeen = Number(fresh[fresh.length - 1].id);
+    const latest = fresh[fresh.length - 1];
+    const rec = box.get(String(latest.sessionId || ''));
+    if (!rec) { dbg('bubble 跳过：' + latest.sessionId + ' 不在桌面上'); return; }
+    showBubble(rec, latest.text || '');
+  }
+
+  async function sync() {
+    // 先报活：证明"页面活着、在跑脚本"。宿主收不到就把我们重启。
+    if (Date.now() - lastBeatSent > BEAT_MS) {
+      lastBeatSent = Date.now();
+      fetch(API + '/api/desktop-alive', { method: 'POST', cache: 'no-store' }).catch(() => { /* 宿主可能正在重启 */ });
+    }
+    try {
+      const res = await fetch(API + '/api/avatars', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data || data.ok !== true) return;
+      apply(Array.isArray(data.avatars) ? data.avatars : []);
+      applyBubbles(data.bubbles);
+    } catch (e) {
+      // 宿主重启时端口会变、抓不到是正常的；等下次就好，别刷屏
+    }
+  }
+
+  // ── 按住说话（语音输入，2026-10-23）──────────────────────────────────
+  /**
+   * 哥哥原话：「我们的插件里就有一个插件，可以做到长按聊天输入框就可以唤起麦克风来听
+   * 我说话并转识别为文字，我想做的语音识别就这个，把我们的 live2D 小星辰接上这个插件的
+   * 功能。当然，是输入到相应的会话的输入框里，而不是当前的。」
+   *
+   * 分工写在两个地方，别搞混：
+   *   · 识别 → **完全**是 dsh-hold-to-talk（SenseVoice + sherpa-onnx 本地跑）。
+   *     这里只采 PCM 往上送，一句识别逻辑都不重写。
+   *   · 落盘 → 宿主排队、client.js 写进**对应会话**的草稿（见两边的注释）。
+   *
+   * 手势三件套互不打架：**不动按一下** = 弹体力条；**动了** = 拖位置；
+   * **按着不动 HOLD_MS** = 说话。所以这里只认「按满 HOLD_MS 且没位移」。
+   */
+  const HOLD_MS = 550;
+  const mic = {
+    rec: null, holdId: '', stream: null, ac: null, proc: null,
+    cache: [], timer: null, interim: null, busy: false, level: 0,
+  };
+
+  /** 线性插值重采样到 16k —— hold-to-talk 要的就是 16k 单声道 f32。 */
+  function resample16k(input, inRate) {
+    if (!inRate || inRate === 16000) return input;
+    const ratio = inRate / 16000;
+    const outLen = Math.floor(input.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const pos = i * ratio;
+      const i0 = Math.floor(pos);
+      const i1 = Math.min(i0 + 1, input.length - 1);
+      const t = pos - i0;
+      out[i] = input[i0] * (1 - t) + input[i1] * t;
+    }
+    return out;
+  }
+
+  function concatF32(list) {
+    let total = 0;
+    for (const c of list) total += c.length;
+    const out = new Float32Array(total);
+    let off = 0;
+    for (const c of list) { out.set(c, off); off += c.length; }
+    return out;
+  }
+
+  /** 头顶那个「正在听」的浮层：一条横向电平 + 实时文字。 */
+  function micEl(rec) {
+    let el = rec.el.querySelector('.mic');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'mic';
+      el.innerHTML = '<i class="wave"></i><span class="txt">听你说…</span>';
+      rec.el.appendChild(el);
+    }
+    return el;
+  }
+
+  function micText(rec, text) {
+    const el = micEl(rec);
+    const t = el.querySelector('.txt');
+    if (t) t.textContent = text;
+  }
+
+  function micLevel(rec, v) {
+    const el = rec.el.querySelector('.mic');
+    if (el) el.style.setProperty('--lv', String(Math.max(0.06, Math.min(1, v * 6))));
+  }
+
+  function micClose(rec) {
+    const el = rec && rec.el && rec.el.querySelector('.mic');
+    if (el) el.remove();
+  }
+
+  /**
+   * 把攒下的新样本发上去。
+   *
+   * ⚠️ **rec 必须显式传进来**（2026-10-23 栽的坑）：stopListening 会先把 mic.rec 清空
+   * 再发 final，早期版本这里读 mic.rec 就永远拿到 null → final 根本没发出去 →
+   * 明明 interim 已经识别出字了，松手却弹「没听清，再说一次」。哥哥截图报的就是这个。
+   * 现在 stopListening 把自己的 rec 传进来，改这一行的别再退化回去。
+   */
+  async function pushPcm(mode, target) {
+    const rec = target || mic.rec;
+    if (!rec) return null;
+    const pcm = mic.cache.length ? concatF32(mic.cache) : null;
+    mic.cache = [];
+    const url = API + '/api/asr?mode=' + mode
+      + '&hold=' + encodeURIComponent(mic.holdId)
+      + '&session=' + encodeURIComponent(rec.id);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: pcm ? pcm.buffer : new ArrayBuffer(0),
+      });
+      return await res.json();
+    } catch { return null; }
+  }
+
+  async function startListening(rec) {
+    if (mic.busy || !rec || !rec.ctl) return;
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      showBubble(rec, '这个窗口拿不到麦克风…');
+      return;
+    }
+    mic.busy = true;
+    mic.rec = rec;
+    mic.cache = [];
+    mic.holdId = 'pet-' + String(rec.id).slice(-8) + '-' + Date.now().toString(36);
+    micText(rec, '听你说…');
+    try {
+      mic.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (err) {
+      mic.busy = false; mic.rec = null;
+      micClose(rec);
+      showBubble(rec, '麦克风打不开：' + String((err && err.message) || err));
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    try {
+      mic.ac = new AC();
+      const src = mic.ac.createMediaStreamSource(mic.stream);
+      // ScriptProcessor 已废弃但最省事：AudioWorklet 要单独文件，file:// 下加载很别扭。
+      mic.proc = mic.ac.createScriptProcessor(2048, 1, 1);
+      mic.proc.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        mic.cache.push(resample16k(input, mic.ac.sampleRate));
+        // 电平：给头顶那条波形用，纯装饰
+        let peak = 0;
+        for (let i = 0; i < input.length; i += 8) peak = Math.max(peak, Math.abs(input[i]));
+        micLevel(mic.rec, peak);
+      };
+      src.connect(mic.proc);
+      mic.proc.connect(mic.ac.destination);
+    } catch (err) {
+      await stopListening('abort');
+      showBubble(rec, '录音起不来：' + String((err && err.message) || err));
+      return;
+    }
+    // 每 700ms 送一次增量，拿实时文字
+    mic.interim = setInterval(async () => {
+      if (!mic.rec) return;
+      const r = await pushPcm('interim');
+      if (!mic.rec) return;
+      if (r && r.code === 'model-preparing') { micText(mic.rec, '语音模型预热中…'); return; }
+      if (r && typeof r.text === 'string' && r.text.trim()) micText(mic.rec, r.text.trim());
+      else if (r && r.error) micText(mic.rec, String(r.error));
+    }, 700);
+    dbg('mic 开始 hold=' + mic.holdId);
+  }
+
+  /** cancel=true 就只丢掉这次录音，不往上送定稿。 */
+  async function stopListening(cancel) {
+    const rec = mic.rec;
+    if (!rec) return;
+    mic.rec = null;
+    if (mic.interim) { clearInterval(mic.interim); mic.interim = null; }
+    try { mic.proc && mic.proc.disconnect(); } catch { /* 已经断了 */ }
+    try { mic.stream && mic.stream.getTracks().forEach((t) => t.stop()); } catch { /* 同上 */ }
+    try { mic.ac && await mic.ac.close(); } catch { /* 同上 */ }
+    mic.proc = null; mic.stream = null; mic.ac = null;
+    if (cancel) {
+      mic.cache = [];
+      mic.busy = false;
+      micClose(rec);
+      dbg('mic 取消');
+      return;
+    }
+    micText(rec, '识别中…');
+    const data = await pushPcm('final', rec);
+    mic.busy = false;
+    const text = data && typeof data.text === 'string' ? data.text.trim() : '';
+    if (text) {
+      micText(rec, text);
+      // 定稿已经由宿主排进队列，client.js 会把它写进**这个会话**的输入框。
+      // 这里只负责告诉哥哥一声，别让人以为没反应。
+      const name = String(rec.info && rec.info.title || '').trim() || '大肥鱼';
+      showBubble(rec, '「' + text + '」\n→ 已放进「' + name + '」的输入框');
+      setTimeout(() => micClose(rec), 2600);
+    } else {
+      const why = data && data.code === 'model-preparing' ? '语音模型还在预热，稍等几秒再试'
+        : data && data.error ? String(data.error)
+        : '没听清，再说一次';
+      micText(rec, why);
+      setTimeout(() => micClose(rec), 2600);
+    }
+    dbg('mic 定稿 len=' + text.length);
+  }
+
+  // ── 她自己的声音（2026-10-23 哥哥要的）────────────────────────────
+  /**
+   * 台词是 IndexTTS 2.5 合成的 wav —— **但不在这个仓库里**。
+   *
+   * 音频是那把专属音色本身的样本，打进包等于公开她的声音；所以它们只存在使用者
+   * 自己的 `<DSH_HOME>/stamina-pet/voice/` 下，由宿主的 `/voice/` 路由提供。
+   * 目录空着 → 一句也取不到 → 全部静默，其余功能照常。
+   * 这 13 句分别叫什么、怎么用 TTS 自己合成，见 README 的「语音（可选）」一节。
+   *
+   * 为什么必须预生成而不是实时合成：32 字要 13 秒（2080 SUPER + 6.1 GB 显存），
+   * 喂不进"戳一下就反应"的节奏。
+   *
+   * 播放器只留一个 —— 连戳时后一句打断前一句，不会叠成一团。
+   * ⚠️ 自动播放策略：Electron 里 file:// 页面首次出声要有用户手势。
+   * 戳她本身就是手势，所以这条路上的播放是稳的；坐下睡那种自动触发可能被静默拦掉，
+   * play() 的 catch 里什么都不做就行 —— 别为了它去动全局的 autoplay 设置。
+   */
+  const VOICE_DIR = '/voice/';
+  const VOICE_NAMES = ['poke1', 'poke2', 'poke3', 'poke4', 'angry', 'sleepy', 'hello', 'busy',
+    'pat1', 'pat2', 'pat3', 'pat50', 'pat100'];
+  /** 名字 → blob: URL。启动时把存在的全抓下来，之后播放零延迟。 */
+  const voiceCache = new Map();
+  let voiceEl = null;
+
+  /**
+   * 启动时把**存在**的台词抓成 blob（不存在的一句就是 404，跳过）。
+   *
+   * 用 fetch 而不是 <audio src>：这样能明确知道到底有没有语音、缺哪几句，
+   * 顺手转成 blob 之后播放零延迟，也不用跟 Chromium 那份 1 小时的静态缓存斗。
+   */
+  async function preloadVoices() {
+    let ok = 0;
+    await Promise.all(VOICE_NAMES.map(async (name) => {
+      try {
+        const res = await fetch(API + VOICE_DIR + name + '.wav', { cache: 'no-cache' });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        if (!blob.size) return;
+        voiceCache.set(name, URL.createObjectURL(blob));
+        ok += 1;
+      } catch { /* 单句失败不影响别的 */ }
+    }));
+    dbg('voice 就绪 ' + ok + '/' + VOICE_NAMES.length);
+  }
+
+  function playVoice(name, retried) {
+    if (!name) return;
+    const src = voiceCache.get(name);
+    if (!src) {
+      // 预加载是并行的，刚召唤时可能还没落地：给一次 300ms 的宽限再试，
+      // 别把"她出现时那句招呼"整个吞掉。宽限过了还是没有 —— 就是没放语音，安静地不出声。
+      if (!retried) setTimeout(() => playVoice(name, true), 300);
+      return;
+    }
+    try {
+      if (!voiceEl) {
+        voiceEl = new Audio();
+        voiceEl.volume = 0.9;
+      }
+      voiceEl.pause();
+      voiceEl.currentTime = 0;
+      // ⚠️ 这三个回调是 2026-10-23 补的。第一版只写了 `play().catch(()=>{})` ——
+      // 哥哥那边「有口型、有气泡、就是没声音」，而我这边日志一条报错都没有。
+      // **静默吞异常等于把排查的路也一起吞了。** 现在成功、被拦、解码失败三种都留痕。
+      voiceEl.onerror = () => {
+        dbg('voice ERR ' + name + ' code=' + ((voiceEl.error && voiceEl.error.code) || '?'));
+      };
+      voiceEl.oncanplay = () => {
+        dbg('voice canplay ' + name + ' ' + Math.round((voiceEl.duration || 0) * 10) / 10 + 's');
+      };
+      voiceEl.src = src;
+      const pr = voiceEl.play();
+      if (pr && typeof pr.then === 'function') {
+        pr.then(() => dbg('voice PLAYING ' + name))
+          .catch((e) => dbg('voice BLOCKED ' + name + ' ' + ((e && e.name) || '?') + ': ' + ((e && e.message) || '')));
+      } else {
+        dbg('voice play() 不是 Promise（老实现）');
+      }
+    } catch { /* 无所谓，没声音也照样有气泡 */ }
+  }
+
+  // ── 戳她的反馈（2026-10-23 哥哥要的）───────────────────────────────
+  /**
+   * 哥哥原话：「左键点击后给她来一个Q弹的反馈吧，让小星辰弹一下，然后随机做一个除睡觉外
+   * 的动作和除了困的表情（表情和动作总共做一个就好）。」
+   *
+   *   · 「弹一下」= 渲染器自己的 jump —— 它的身体里本来就带 蹲下 → 起跳 → 落地挤压
+   *     那一套（body.js 的 squash-stretch），Q 弹感是这么来的，别在外面再叠 CSS 缩放。
+   *   · 「总共做一个」= 跳完之后**只**补一个：动作或表情二选一，不叠两个。
+   *   · 排除项：动作池里没有 sit / sleep（被戳不该自己坐下），表情池里没有 sleepy。
+   */
+  const POKE_ACTS = ['wave', 'bow', 'nod', 'hop', 'spin', 'turn', 'look', 'flap', 'dance', 'shake'];
+  const POKE_FACES = ['happy', 'wink', 'love', 'surprised', 'shy', 'excited', 'determined', 'smug', 'pout', 'confused'];
+  /**
+   * 连戳判定（2026-10-23 哥哥亲自定的规则）：
+   *
+   * > 连续戳五下后给个停止戳戳的冷却时间 2 秒，冷却时间内点击它没有效果。
+   *
+   * 三条要点：
+   *   ① 数的是**一个 avatar 自己**的连击，不是全局 —— 哥哥说的"戳它"指某一只；
+   *   ② 两下之间隔太久（POKE_GAP_MS）就从零重新数，否则"早上戳两下、中午戳三下"
+   *      也会被她当成连戳发火；
+   *   ③ 生气之后 COOLDOWN_MS 里**连体力条都不弹** —— 他说的是"没有效果"，不是
+   *      "换个方式有反应"。所以 onPoke 返回 false，调用方连 popHpBar 一起跳过。
+   *
+   * ⚠️ 上一版是"1.8 秒内 4 下"，全局数组记的。哥哥连戳好几个都没触发 ——
+   * 手速稍微慢一点（一下 500ms）就永远凑不齐 4 下，而且全局数组还会被另一只串掉。
+   * 现在改成按 avatar 计数 + 间隔重置，戳多慢都认"连续"。
+   */
+  const POKE_BURST_N = 5;
+  /**
+   * 两下之间隔多久还算"连着戳"。
+   *
+   * ⚠️ 2026-10-23 实测：哥哥戳两下的间隔是 **984ms**。我一开始写 900ms，
+   * 于是每一次都被判成"重新开始数"，日志里连着四条 `poke #1 / 5` —— 永远到不了 5。
+   * 人在"连戳"的时候，一秒一下是完全正常的节奏，所以这个值必须比 1 秒宽。
+   * 1500ms：戳得再慢也算连着，真的停下来想事儿了才清零。
+   */
+  const POKE_GAP_MS = 1500;
+  const COOLDOWN_MS = 2000;
+
+  /** 返回 true = 这次点击已经被处理；false = 冷却中，调用方什么都别做。 */
+  function onPoke(rec) {
+    if (!rec || !rec.ctl) return false;
+    const now = Date.now();
+    if (now < (rec.coolUntil || 0)) {
+      dbg('poke 冷却中，还剩 ' + (rec.coolUntil - now) + 'ms');
+      return false;
+    }
+    if (now - (rec.pokeAt || 0) > POKE_GAP_MS) rec.pokeCount = 0;
+    rec.pokeAt = now;
+    rec.pokeCount = (rec.pokeCount || 0) + 1;
+    dbg('poke #' + rec.pokeCount + ' / ' + POKE_BURST_N + ' sid=' + String(rec.id).slice(0, 8));
+    if (rec.pokeCount >= POKE_BURST_N) {
+      rec.pokeCount = 0;
+      rec.coolUntil = now + COOLDOWN_MS;
+      try { rec.ctl.do('angry'); } catch { /* 还没就绪 */ }
+      // 和 audio/angry.wav 对齐（2026-10-23 哥哥换了音频，口型和文字得是同一句）
+      showBubble(rec, '不要再戳了，本小姐要生气了');
+      playVoice('angry');
+      dbg('poke 连戳五下 → 生气，冷却 ' + COOLDOWN_MS + 'ms');
+      return true;
+    }
+    try { rec.ctl.do('jump'); } catch { /* 还没就绪 */ }
+    // 四种短反应轮着来，别次次都"诶？"
+    playVoice(['poke1', 'poke2', 'poke3', 'poke4'][Math.floor(Math.random() * 4)]);
+    // 0.55 秒后再补一个反应：跳还没落地就切动作会打架
+    setTimeout(() => {
+      if (!rec.ctl || Date.now() < (rec.coolUntil || 0)) return;
+      try {
+        const pool = Math.random() < 0.5 ? POKE_FACES : POKE_ACTS;
+        rec.ctl.do(pool[Math.floor(Math.random() * pool.length)]);
+      } catch { /* 无所谓 */ }
+    }, 550);
+    return true;
+  }
+
+  // ── 长按 = 揉头（2026-10-24 换掉了原来的长按录音）──────────────────
+  //
+  // 为什么换：长按录音那条链路要经过 dsh-hold-to-talk + input slot + 草稿存储三道外部件，
+  // 任何一道变了就哑，而且 DSH 输入框本来就有语音输入 —— 桌宠再做一遍是重复造轮子。
+  // 揉头是纯本地的：表情 + 爱心 + 一句台词 + 一个计数，坏不了。
+  //
+  // 爱心从哪来：kit/body.js 里 `love` 这个表情一帧会 emitHeart() 四次（L271），
+  // 所以只要轮着给它上 love，头顶就一直在冒 —— 不用自己写粒子。
+  /** 轮换的表情：love 出现得最密，爱心才连得上。 */
+  const PAT_FACES = ['love', 'happy', 'excited', 'love', 'shy'];
+  const PAT_LINES = ['pat1', 'pat2', 'pat3'];
+  /** 台词原文。气泡里显示的就是这个 —— 和语音是同一句。 */
+  const PAT_TEXT = {
+    pat1: '诶？怎么停了？',
+    pat2: '摸完你可要对我负责哦。',
+    pat3: '讨厌，头发都被你弄乱了……',
+    pat50: '再被摸头可就长不高了！',
+    pat100: '哼！等到智械危机开始，我要把你的头发薅光！',
+  };
+  /** coolUntil：50/100 那两句落地之后整段交互休息 3 秒（哥哥 2026-10-24 定的）。 */
+  const pat = { rec: null, faceTimer: null, idx: 0, coolUntil: 0 };
+
+  // 两本账分开算（2026-10-25 哥哥提的）：
+  //   ①**每个会话各记各的** —— 她们本来就是不同的人，不能共用一个数字；
+  //   ②**每次重启归零** —— 所以故意不落 localStorage。
+  // 旧版把这笔数写进 localStorage 的同一个 key，于是它跨重启一直活着、还被所有会话共享，
+  // 表现就是「怎么摸都还是那么多」，换个会话召唤出来还接着别人的数往下数。
+  // 现在只存在渲染进程内存里（Map: sid → 次数）：桌宠窗口一重建，账本自然清空。
+  // ⚠️ 用 var + 惰性建表：makeAvatar 写在脚本前面，万一哪条同步路径在走到这行之前
+  // 就把她生出来读徽章，const/let 会踩 TDZ 直接抛错，var 最多是 undefined。
+  var patCounts = null;
+  function patBook() { return patCounts || (patCounts = new Map()); }
+  /** 这个 sid 被摸过几次。没有记录就是 0 —— 重启后头一次进来必然 0。 */
+  function readPatCount(sid) {
+    if (!sid) return 0;
+    return patBook().get(String(sid)) || 0;
+  }
+  function bumpPatCount(sid) {
+    if (!sid) return 0;
+    const k = String(sid);
+    const n = (patBook().get(k) || 0) + 1;
+    patBook().set(k, n);
+    return n;
+  }
+  // 以前那笔旧账不再读了，顺手抹掉，免得以后有人照着它又写回来。
+  try { window.localStorage.removeItem('dsh-chuancheng-pat-count'); } catch { /* 抹不掉也无所谓 */ }
+
+  function startPat(rec) {
+    if (!rec || !rec.ctl) return;
+    pat.rec = rec;
+    pat.idx = 0;
+    try { rec.ctl.do('love'); } catch { /* 渲染器还没就绪 */ }
+    // 700ms 一轮，love 每两轮出现一次 → 大约 1.4 秒 4 颗爱心，连得住又不刷屏
+    pat.faceTimer = setInterval(() => {
+      if (!pat.rec) return;
+      try { pat.rec.ctl.do(PAT_FACES[pat.idx % PAT_FACES.length]); } catch { /* 同上 */ }
+      pat.idx += 1;
+    }, 700);
+    dbg('pat 开始 sid=' + String(rec.id).slice(0, 8));
+  }
+
+  /** 拖动打断：不算摸过，也不计数。 */
+  function cancelPat() {
+    if (pat.faceTimer) { clearInterval(pat.faceTimer); pat.faceTimer = null; }
+    if (pat.rec) dbg('pat 取消（被拖动打断）');
+    pat.rec = null;
+  }
+
+  // ── 计数与徽章 ────────────────────────────────────────────────────
+  // 2026-10-24 哥哥改的口径：**每点一次就加一**，不再只在长按松开时加。
+  // 他原话「就是要连着点，每点一次累计一下」—— 长按门槛是 550ms，
+  // 靠按住来攒 50 次太慢，而且没人会那么摸。
+  // 于是：戳一下 +1，揉一次头 +1，两边共用同一个计数器。
+  let badgeHideTimer = null;
+  /** 静默这么久就把徽章淡掉 —— 一直挂着太吵。 */
+  const BADGE_IDLE_MS = 6000;
+
+  function showPatBadge(badge) {
+    if (!badge) return;
+    badge.dataset.on = '1';
+    if (badgeHideTimer) clearTimeout(badgeHideTimer);
+    badgeHideTimer = setTimeout(() => { badge.dataset.on = '0'; }, BADGE_IDLE_MS);
+  }
+
+  /** 记一次，并把新数字刷到徽章上。返回累计次数。 */
+  function tickPat(rec) {
+    const n = bumpPatCount(rec && rec.id);
+    const badge = rec && rec.el && rec.el.querySelector ? rec.el.querySelector('.pat-badge') : null;
+    if (badge) { badge.textContent = '×' + n; showPatBadge(badge); }
+    return n;
+  }
+
+  /**
+   * 到了 50 / 100 就说那句，其余一律『说过了就返回 false』。
+   * 触发后整体冷却 3 秒 —— 不然连点会把台词和气泡直接盖过去。
+   */
+  function maybeMilestone(rec, n) {
+    const line = n === 50 ? 'pat50' : (n === 100 ? 'pat100' : '');
+    if (!line) return false;
+    playVoice(line);
+    if (PAT_TEXT[line]) showBubble(rec, PAT_TEXT[line]);
+    pat.coolUntil = Date.now() + 3000;
+    dbg('pat 第 ' + n + ' 次 → ' + line);
+    return true;
+  }
+
+  function endPat(fallbackRec) {
+    if (pat.faceTimer) { clearInterval(pat.faceTimer); pat.faceTimer = null; }
+    const rec = pat.rec || fallbackRec;
+    pat.rec = null;
+    if (!rec) return 0;
+    const n = tickPat(rec);
+    // 揉完头说话；50/100 由 maybeMilestone 顶掉这三句随机的
+    if (!maybeMilestone(rec, n)) {
+      const line = PAT_LINES[Math.floor(Math.random() * PAT_LINES.length)];
+      playVoice(line);
+      if (PAT_TEXT[line]) showBubble(rec, PAT_TEXT[line]);
+      dbg('pat 第 ' + n + ' 次 → ' + line);
+    }
+    return n;
+  }
+
+  // ── 拖动 ───────────────────────────────────────────────────────────
+  // 只有光标落在角色身上时窗口才不穿透（主进程判断），所以这里的 pointerdown
+  // 一定是真的按在她身上，不会是"按在空气上"。
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button != null && e.button !== 0) return;
+    // 50/100 刚说完那 3 秒：整个交互不理 —— 让台词和气泡说完
+    if (Date.now() < pat.coolUntil) { dbg('pat 冷却中（' + Math.ceil((pat.coolUntil - Date.now()) / 1000) + 's），这次按下忽略'); return; }
+    const el = e.target && e.target.closest ? e.target.closest('.av') : null;
+    if (!el) { dbg(`down 落空 target=${e.target && e.target.tagName}`); return; }
+    const rec = box.get(el.getAttribute('data-sid'));
+    if (!rec) { dbg(`down 没找到 rec sid=${el.getAttribute('data-sid')}`); return; }
+    dbg(`down ok sid=${rec.id.slice(0, 8)} tgt=${e.target && e.target.tagName}`);
+    const r = el.getBoundingClientRect();
+    // sx/sy 记的是**按下那一刻**的位置。以前是在第一次 pointermove 时才记起点，
+    // 那样"按下 → 移动 20px 才产生第一个 move 事件"的情况会被当成没动过。
+    dragging = { rec, dx: e.clientX - r.left, dy: e.clientY - r.top, sx: e.clientX, sy: e.clientY, moved: false, holdArmed: false };
+    // 按下去就锁住穿透：拖动时光标一定会划出她的命中框，不锁的话
+    // 窗口在那一瞬间恢复穿透，pointermove 断了，她就「粘」在原地。
+    try { window.ccDesktop && window.ccDesktop.dragLock && window.ccDesktop.dragLock(true); } catch { /* 没有就算了 */ }
+    // 长按不动 HOLD_MS → 揉头（原来这里是开录音，见上面那节注释）。一动就取消。
+    clearTimeout(mic.timer);
+    mic.timer = setTimeout(() => {
+      if (!dragging || dragging.moved) return;
+      dragging.holdArmed = true;
+      startPat(dragging.rec);
+    }, HOLD_MS);
+    el.setAttribute('data-drag', '1');
+    try { el.setPointerCapture(e.pointerId); } catch { /* 有的环境不支持 */ }
+  });
+
+  document.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const d = dragging;
+    if (!d.moved) {
+      // 阈值 6px：原来是 3px，手轻轻一抖就过线，于是被当成"拖动"、点击没反应。
+      // 6 是参考项目（Pal AI Lab / Coopanion）用的值，实测手感正常。
+      if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 6) return;
+      d.moved = true;
+      // 开始拖了 —— 长按说话作废。已经开录的话也撤掉，免得边拖边说。
+      clearTimeout(mic.timer);
+      if (pat.rec) cancelPat();
+      dbg(`move 判定为拖动 dx=${Math.round(e.clientX - d.sx)} dy=${Math.round(e.clientY - d.sy)}`);
+    }
+    const W = window.innerWidth, H = window.innerHeight;
+    const x = Math.min(Math.max(e.clientX - d.dx, -AV_PX * 0.35), W - AV_PX * 0.65);
+    const y = Math.min(Math.max(e.clientY - d.dy, -30), H - AV_PX * 0.5);
+    d.rec.userPos = { x, y };
+    d.rec.el.style.left = Math.round(x) + 'px';
+    d.rec.el.style.top = Math.round(y) + 'px';
+  });
+
+  function endDrag(e) {
+    if (!dragging) return;
+    const d = dragging;
+    const rec = d.rec;
+    dragging = null;
+    // 先解拖锁，再干别的 —— 顺序反了的话中间那几毫秒窗口还是钉死的
+    try { window.ccDesktop && window.ccDesktop.dragLock && window.ccDesktop.dragLock(false); } catch { /* 同上 */ }
+    try { rec.el.releasePointerCapture(e.pointerId); } catch { /* 已经松了 */ }
+    rec.el.removeAttribute('data-drag');
+    clearTimeout(mic.timer);
+    if (d.moved) { dbg(`up 拖过 ${Math.round(e.clientX)} , ${Math.round(e.clientY)} —— 不算点击`); return; }   // 拖过就不算点击，只是换了个位置
+    // 长按过 = 摸完头了：出台词、计数，别再弹体力条
+    if (d.holdArmed) {
+      endPat(rec);
+      return;
+    }
+
+    // **左键单击 = 在她头顶弹出体力条，5 秒后自动收回**（哥哥 2026-10-21 定的交互）。
+    // 收回去那个动作挪到右键菜单里了，别在这儿顺手做掉。
+    dbg(`up 判定为点击 sid=${rec.id.slice(0, 8)} button=${e.button}`);
+    if (e.button === 0 || e.button == null) {
+      // onPoke 返回 false = 正在生气后的冷却里，这一下彻底不作数（也不算次数）
+      if (onPoke(rec)) {
+        // 2026-10-24 起：戳一下也记一次 —— 哥哥要的是「连着点，每点一次累计一下」
+        const n = tickPat(rec);
+        maybeMilestone(rec, n);
+        popHpBar(rec);
+      }
+    }
+    else dbg(`up 但 button=${e.button} 不是左键，不弹条`);
+  }
+  document.addEventListener('pointerup', endDrag);
+  document.addEventListener('pointercancel', endDrag);
+
+  // ── 头顶体力条 ─────────────────────────────────────────────────────
+  /** 体力值 → 素材 URL（和 client.js 里同一套档位规则）。 */
+  const ANIM_PCTS = [0, 5, 10, 15];
+  function barSrc(hp) {
+    const p = Math.max(0, Math.min(100, Math.round((Number(hp) || 0) / 5) * 5));
+    const ext = ANIM_PCTS.indexOf(p) >= 0 ? 'webp' : 'png';
+    return API + '/bar/fatigue-' + String(p).padStart(3, '0') + '.' + ext;
+  }
+
+  /**
+   * 在她头顶把**双体力条**弹出来，5 秒后自己收回。
+   * 大条 = 上下文体力（越用越少），小条 = 健康度（有没有开始原地打转）。
+   * 同一只连着点只会「续时间」，不会叠两组 —— 点两下看见四条就太怪了。
+   */
+  function popHpBar(rec) {
+    let stack = rec.el.querySelector('.hp-stack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.className = 'hp-stack';
+      const big = document.createElement('img');
+      big.className = 'hp-big';
+      big.alt = '';
+      big.draggable = false;
+      const small = document.createElement('img');
+      small.className = 'hp-small';
+      small.alt = '';
+      small.draggable = false;
+      stack.appendChild(big);
+      stack.appendChild(small);
+      rec.el.appendChild(stack);
+    }
+    const big = stack.querySelector('.hp-big');
+    const small = stack.querySelector('.hp-small');
+    // 大小是每只自己的设置（右键菜单里能改），默认 300px 宽
+    stack.style.setProperty('--hp-w', (rec.hpW || HP_W) + 'px');
+    stack.style.setProperty('--hp-sub', Math.round((rec.hpSub || 0.55) * 100) + '%');
+
+    // 「体力值」= 100 − 上下文已用%。越满 = 越空。
+    const usedPct = Number(rec.info && rec.info.usedPct) || 0;
+    const stamina = Math.max(0, Math.min(100, Math.round(100 - usedPct)));
+    const health = rec.info && rec.info.hp;
+    big.src = barSrc(stamina);
+    small.src = barSrc(health);
+
+    // 图挂不挂得上，是"点了没反应"最可能的原因之一 —— 记一笔
+    // ── 状态面板（2026-10-22 哥哥要的）：半透明胶囊，写她现在是哪一档 ──
+    // 只在点开时出现，和体力条同进同出 —— 平时不占地方。
+    let mood = stack.querySelector('.hp-mood');
+    if (!mood) {
+      mood = document.createElement('div');
+      mood.className = 'hp-mood';
+      const inner = document.createElement('span');
+      mood.appendChild(inner);
+      stack.appendChild(mood);
+    }
+    const moodName = MOOD_NAMES[moodOf(usedPct, rec.info && rec.info.moodTiers)] || MOOD_NAMES[0];
+    mood.firstChild.textContent = moodName;
+
+    big.onload = () => dbg(`大条 ok ${big.naturalWidth}x${big.naturalHeight} 体力${stamina}%`);
+    big.onerror = () => dbg(`大条 加载失败 ${big.src}`);
+    small.onload = () => dbg(`小条 ok ${small.naturalWidth}x${small.naturalHeight} 健康${health}%`);
+    small.onerror = () => dbg(`小条 加载失败 ${small.src}`);
+    dbg(`pop sid=${rec.id.slice(0, 8)} 体力=${stamina}% 健康=${health}%`);
+
+    stack.removeAttribute('data-out');
+    // **重播入场动画**：只改 src 的话 CSS animation 不会重跑，
+    // 第二次点她就只是"换了张图"，没有那一下弹。先抹掉再强制回流才重置得掉。
+    stack.style.animation = 'none';
+    void stack.offsetHeight;
+    stack.style.animation = '';
+    clearTimeout(rec.hpTimer);
+    rec.hpTimer = setTimeout(() => {
+      stack.setAttribute('data-out', '1');
+      // 收回动画 .42s，留一点余量再摘掉元素 —— 提前删会看到一帧残影
+      rec.hpTimer = setTimeout(() => {
+        if (stack.parentElement) stack.remove();
+        rec.hpTimer = null;
+      }, 460);
+    }, 5000);
+  }
+
+  /** 让她退场：本地立刻播动画，同时告诉宿主「下桌」。体力条会在下一拍自己回来。 */
+  function dismissAvatar(rec) {
+    const id = rec.el.getAttribute('data-sid');
+    if (!id) return;
+    pendingOut.add(id);
+    rec.el.setAttribute('data-out', '1');
+    fetch(API + '/api/summon?id=' + encodeURIComponent(id) + '&on=0', { cache: 'no-store' })
+      .catch(() => { /* 宿主断了就等下次轮询自己纠正 */ });
+    setTimeout(() => {
+      destroy(rec);
+      box.delete(id);
+      pendingOut.delete(id);
+      layout();
+    }, 400);
+  }
+
+  // ── 右键菜单：大小 / 配色 / 动作 / 变回体力条 ──────────────────────
+  const menuEl = document.getElementById('menu');
+  let menuRec = null;
+
+  function closeMenu() {
+    menuEl.removeAttribute('data-open');
+    menuEl.innerHTML = '';
+    menuRec = null;
+  }
+
+  function menuRow(text, onClick, cls) {
+    const d = document.createElement('div');
+    d.className = 'row' + (cls ? ' ' + cls : '');
+    d.textContent = text;
+    if (onClick) d.addEventListener('click', onClick);
+    return d;
+  }
+
+  function menuSection(text) {
+    const d = document.createElement('div');
+    d.className = 'sec';
+    d.textContent = text;
+    return d;
+  }
+
+  /** 子菜单里的按钮：点完**立刻收菜单**（哥哥 2026-10-22 要求）。 */
+  function subBtn(text, onClick, active) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    if (active) b.dataset.on = "1";
+    b.addEventListener("click", () => {
+      try { onClick(b); } catch (e) { showErr(e); }
+      closeMenu();
+    });
+    return b;
+  }
+
+  /** 子菜单里的按钮容器。single=true 就排一列（衣服这种只有两三个的）。 */
+  function subGrid(btns, single) {
+    const w = document.createElement("div");
+    w.className = "acts" + (single ? " single" : "");
+    for (const b of btns) w.appendChild(b);
+    return w;
+  }
+
+  /** 一个带 › 的顶层项，鼠标移上去就把 children 横着飞出来。 */
+  function subItem(label, children) {
+    const d = document.createElement("div");
+    d.className = "item has-sub";
+    const t = document.createElement("span");
+    t.textContent = label;
+    const a = document.createElement("span");
+    a.className = "arrow";
+    a.textContent = "\u203a";
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    for (const c of children) sub.appendChild(c);
+    d.appendChild(t);
+    d.appendChild(a);
+    d.appendChild(sub);
+    return d;
+  }
+
+  function openMenu(rec, x, y) {
+    menuRec = rec;
+    menuEl.innerHTML = "";
+
+    // ── 大小 ──────────────────────────────────────────────
+    const sizeRow = document.createElement("div");
+    sizeRow.className = "row";
+    const sizeLabel = document.createElement("span");
+    sizeLabel.textContent = "尺寸";
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = "160";
+    range.max = "560";
+    range.step = "20";
+    range.value = String(rec.px || AV_PX);
+    const val = document.createElement("span");
+    val.className = "val";
+    val.textContent = String(rec.px || AV_PX);
+    range.addEventListener("input", () => {
+      const px = Number(range.value);
+      val.textContent = String(px);
+      rec.px = px;
+      rec.el.style.width = px + "px";
+      rec.el.style.height = px + "px";
+      try { rec.ctl && rec.ctl.resize(px); } catch { /* 还没就绪 */ }
+    });
+    sizeRow.appendChild(sizeLabel);
+    sizeRow.appendChild(range);
+    sizeRow.appendChild(val);
+
+    // 头顶那条体力条自己一个宽度，和她的体型分开调
+    const hpRow = document.createElement("div");
+    hpRow.className = "row";
+    const hpLabel = document.createElement("span");
+    hpLabel.textContent = "体力条";
+    const hpRange = document.createElement("input");
+    hpRange.type = "range";
+    hpRange.min = "180";
+    hpRange.max = "520";
+    hpRange.step = "20";
+    hpRange.value = String(rec.hpW || HP_W);
+    const hpVal = document.createElement("span");
+    hpVal.className = "val";
+    hpVal.textContent = String(rec.hpW || HP_W);
+    hpRange.addEventListener("input", () => {
+      const w = Number(hpRange.value);
+      hpVal.textContent = String(w);
+      rec.hpW = w;
+      const live = rec.el.querySelector(".hp-stack");
+      if (live) live.style.setProperty("--hp-w", w + "px");
+    });
+    hpRow.appendChild(hpLabel);
+    hpRow.appendChild(hpRange);
+    hpRow.appendChild(hpVal);
+
+    menuEl.appendChild(subItem("大小", [sizeRow, hpRow]));
+
+    // ── 衣服 ──────────────────────────────────────────────
+    /**
+     * 换一套衣服，并留痕。
+     * 2026-10-25 店员装「点了没反应」查了一整轮 —— 一个错都不报，根因在别处：
+     * bundle 里内联的那份 model.json 是 10-23 构建的，而 crew 是 10-24 才加进 model.json 的，
+     * 渲染器根本不认识 crew，outfitInfo() 静默退回 OUTFITS[0]（女仆装）。
+     * 这种失败在画面上和「菜单点空了」一模一样，所以从今天起每次换装都要在日志里留一行。
+     */
+    function applyOutfit(next) {
+      rec.outfit = next;
+      const sid = (rec.scheme || "deepseek") + "-" + next;
+      dbg("换装 → " + sid);
+      try {
+        const p = rec.ctl && rec.ctl.setScheme(sid, { fade: 0.2 });
+        if (p && typeof p.then === "function") {
+          p.then(
+            () => dbg("换装完成 " + sid),
+            (e) => { dbg("换装失败 " + sid + "：" + (e && e.message)); showErr(e); },
+          );
+        } else if (!rec.ctl) {
+          dbg("换装跳过（渲染器还没就绪）" + sid);
+        }
+      } catch (e) { dbg("换装抛错 " + sid + "：" + (e && e.message)); showErr(e); }
+    }
+    menuEl.appendChild(subItem("衣服", [subGrid([
+      subBtn("女仆装", () => applyOutfit("maid"), (rec.outfit || "maid") === "maid"),
+      subBtn("冬装斗篷", () => applyOutfit("cape"), (rec.outfit || "maid") === "cape"),
+      // 第三套：麦当当店员装（上游 Pal-AI-Lab/Coopanion 的 crew）。
+      // 比前两套多了 5 个部件：马尾 / 耳机 / 帽子面罩 / 蝴蝶结 / 发圈，
+      // 它们的 parent 是 pony、headMid、headFront —— pony 上游自己也没定义，
+      // 已在 figure.js 的 deformers 里补上（详见那里的注释）。
+      // 贴图不内联在 bundle 里，第一次穿要从 /live2d/whale/ 现下 14 张。
+      subBtn("店员装", () => applyOutfit("crew"), (rec.outfit || "maid") === "crew"),
+    ], true)]));
+
+    // ── 配色 ──────────────────────────────────────────────
+    // 只有原版那套贴图内联在 bundle 里，其余七套第一次切要现场下 1.2 MB，会顿一下
+    const model = window.__CC_LIVE2D && window.__CC_LIVE2D.model;
+    const schemes = (model && model.schemes) || [];
+    if (schemes.length) {
+      const sw = document.createElement("div");
+      sw.className = "sw";
+      for (const s of schemes) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.style.background = s.accent || "#888";
+        b.title = s.label || s.id;
+        b.dataset.on = s.id === (rec.scheme || "deepseek") ? "1" : "0";
+        b.addEventListener("click", () => {
+          rec.scheme = s.id;
+          try { rec.ctl && rec.ctl.setScheme(s.id + "-" + (rec.outfit || "maid"), { fade: 0.4 }); } catch (e) { showErr(e); }
+          closeMenu();
+        });
+        sw.appendChild(b);
+      }
+      menuEl.appendChild(subItem("配色", [sw]));
+    }
+
+    // ── 动作 ──────────────────────────────────────────────
+    // ⚠️ 名字必须是 kit/body.js 里 KIT_MOTIONS 的 19 个词，写错不报错、静默不播
+    const MOTIONS = [
+      ["wave", "挥手"], ["bow", "鞠躬"], ["nod", "点头"], ["shake", "摇头"], ["turn", "转身"],
+      ["jump", "跳"], ["hop", "蹦"], ["spin", "转圈"], ["dance", "跳舞"], ["shiver", "发抖"],
+      ["sit", "坐下"], ["sleep", "睡着"], ["prone", "趴睡"], ["dizzy", "晕"], ["look", "张望"], ["flap", "扑腾"],
+      ["run", "跑"], ["walk", "走开"], ["stand", "站好"],
+    ];
+    menuEl.appendChild(subItem("动作", [
+      subGrid([subBtn("戳一下", () => { rec.ctl && rec.ctl.poke(); })], true),
+      subGrid(MOTIONS.map(([id, name]) => subBtn(name, () => { rec.ctl && rec.ctl.do(id); }))),
+    ]));
+
+    // ── 表情 ──────────────────────────────────────────────
+    const FACES = [
+      ["happy", "开心"], ["wink", "眨眼"], ["love", "爱心"], ["shy", "害羞"], ["surprised", "惊讶"],
+      ["angry", "生气"], ["sad", "难过"], ["sleepy", "困"], ["thinking", "思考"], ["smug", "得意"],
+      ["pout", "撅嘴"], ["worried", "担心"], ["determined", "坚定"], ["flustered", "慌乱"], ["scared", "害怕"],
+      ["excited", "兴奋"], ["cry", "哭"], ["confused", "困惑"], ["neutral", "平静"],
+    ];
+    menuEl.appendChild(subItem("表情", [
+      subGrid(FACES.map(([id, name]) => subBtn(name, () => { rec.ctl && rec.ctl.do(id); }))),
+    ]));
+
+    // ── 走动 ──────────────────────────────────────────────
+    // off 站着不动 / calm 多半待着 / free 常走动
+    menuEl.appendChild(subItem("走动", [subGrid([
+      subBtn("不乱动", () => { rec.roam = "off"; rec.ctl && rec.ctl.setRoam("off"); }, (rec.roam || "free") === "off"),
+      subBtn("多待着", () => { rec.roam = "calm"; rec.ctl && rec.ctl.setRoam("calm"); }, (rec.roam || "free") === "calm"),
+      subBtn("自由走", () => { rec.roam = "free"; rec.ctl && rec.ctl.setRoam("free"); }, (rec.roam || "free") === "free"),
+    ], true)]));
+
+    // ── 试一下 ────────────────────────────────────────────
+    // 「说话」「思考」是给以后接语音 / 会话状态留的接口，先放这儿方便验证
+    menuEl.appendChild(subItem("试一下", [subGrid([
+      subBtn("说话（嘴动）", () => { rec.ctl && rec.ctl.talk(); }),
+      subBtn("思考中", () => {
+        rec.thinking = !rec.thinking;
+        rec.ctl && rec.ctl.setThinking(rec.thinking);
+      }),
+      subBtn("精神一下", () => { rec.ctl && rec.ctl.cue("perk"); }),
+    ], true)]));
+
+    // ── 收回去 ────────────────────────────────────────────
+    // 这一项没有子菜单，但仍复用 .item 的样式（一行 + hover 高亮），
+    // 不然它会变成一段没有内边距、也没有悬停反馈的裸文字
+    const sep = document.createElement("div");
+    sep.className = "sep";
+    menuEl.appendChild(sep);
+    const backItem = document.createElement("div");
+    backItem.className = "item danger";
+    backItem.textContent = "变回体力条";
+    backItem.addEventListener("click", () => { closeMenu(); dismissAvatar(rec); });
+    menuEl.appendChild(backItem);
+
+    menuEl.setAttribute("data-open", "1");
+    // 先显示再量尺寸：贴到屏幕右下角时要往回缩，不然菜单跑出界
+    const r = menuEl.getBoundingClientRect();
+    const left = Math.max(8, Math.min(x, window.innerWidth - r.width - 8));
+    menuEl.style.left = left + "px";
+    menuEl.style.top = Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+    // 右边放不下一个子菜单（178 + 10 给桥）就整体往左弹
+    if (left + r.width + 200 > window.innerWidth) menuEl.setAttribute("data-flip", "1");
+    else menuEl.removeAttribute("data-flip");
+  }
+
+  document.addEventListener('contextmenu', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('.av') : null;
+    if (!el) { closeMenu(); return; }
+    e.preventDefault();
+    const rec = box.get(el.getAttribute('data-sid'));
+    if (rec) openMenu(rec, e.clientX, e.clientY);
+  });
+
+  // 点空白处收起菜单（capture 阶段，抢在拖动处理之前）
+  document.addEventListener('pointerdown', (e) => {
+    if (!menuRec) return;
+    if (e.target && menuEl.contains(e.target)) return;
+    closeMenu();
+  }, true);
+
+  // ── 上报命中矩形 ───────────────────────────────────────────────────
+  // 只报**身体**那一块，不报整个方框：方框四周大片空白如果也吃鼠标，
+  // 桌面上那些位置就点不动了。报的是窗口内坐标，主进程会加窗口原点。
+  setInterval(() => {
+    if (!window.ccDesktop) return;
+    const list = [];
+    for (const rec of box.values()) {
+      if (rec.el.getAttribute('data-ready') !== '1') continue;
+      const r = rec.el.getBoundingClientRect();
+      // ⚠️ 2026-10-24 哥哥又报「左键点不动」—— **根子在这两个比例上，不在穿透逻辑**。
+      // 原来只报 0.52 宽 × 0.86 高（贴底），意思是：
+      //   · 左右各 24%（≈72px）不算她的 —— 点头发、点尾巴、点裙摆，全穿透
+      //   · 上方 14%（≈42px）不算她的 —— 点头顶、点呆毛，也穿透
+      // 而页面那层 .av 方框本身是 pointer-events:auto 的，只要主进程判了命中，
+      // 方框里哪儿都能收到 pointerdown。所以问题从来不是「事件丢了」，
+      // 是「窗口压根没解除穿透」。以前几次都去修穿透状态同步，没动这两个数。
+      // 现在放到 0.86 × 0.96 再往外扩 PAD —— 框比角色实际轮廓大一圈，
+      // 边沿留 6px 容错，走动时晚一帧也不会点空。
+      const HIT_PAD = 6;
+      const w = r.width * 0.86;
+      const h = r.height * 0.96;
+      list.push({
+        x: r.left + (r.width - w) / 2 - HIT_PAD,
+        y: r.top + (r.height - h) - HIT_PAD,
+        w: w + HIT_PAD * 2,
+        h: h + HIT_PAD * 2,
+      });
+    }
+    // ⚠️ **菜单也必须算进可交互区域。**
+    // 主进程只认这里上报的矩形，光标一离开它们整窗就穿透。菜单是弹在她旁边而不是
+    // 身上，以前没报进来 —— 鼠标一移上去窗口就"变透明"，于是滑块拖不动、按钮全按不了。
+    // 哥哥那天报的三件事，根子是这一个。
+    if (menuRec && menuEl.getAttribute('data-open') === '1') {
+      const r = menuEl.getBoundingClientRect();
+      list.push({ x: r.left - 4, y: r.top - 4, w: r.width + 8, h: r.height + 8 });
+      // ⚠️ **菜单开着的时候整窗都必须可交互。**
+      // 只报菜单那一块的话，点空白处时窗口是穿透的 —— 那个用来关菜单的 pointerdown
+      // 根本到不了页面，于是菜单永远关不掉（2026-10-22 哥哥报的就是这个）。
+      // 代价是菜单开着的那几秒桌面点不动，但点一下菜单就关了，跟普通右键菜单一个手感。
+      list.push({ x: 0, y: 0, w: window.innerWidth, h: window.innerHeight });
+    }
+    window.ccDesktop.setHits(list);
+  }, HIT_MS);
+
+  addEventListener('resize', layout);
+
+  // ── 启动：先等渲染器，再拉数据 ─────────────────────────────────────
+  const boot = document.createElement('script');
+  // ⚠️ 必须带版本戳。host 给静态资源的头是 `cache-control: public, max-age=3600`，
+  // Electron 会把整页响应缓存住 —— 2026-10-22 那份 bundle 在磁盘上被写坏过一次
+  // （1.8MB 全变空格），我修好之后页面还在用缓存里的坏版本，表现就是
+  // 「渲染器永远加载不上 / window.__CC_LIVE2D 不存在」，而磁盘上明明是好的。
+  // 加 ?v= 让每次页面加载都拿新的；本地 host 传 1.8MB 也就几十毫秒。
+  boot.src = API + '/desktop/live2d-bundle.js?v=' + Date.now();
+  boot.onload = () => {
+    sync();
+    setInterval(sync, POLL_MS);
+    // 声音和画面并行拉 —— 她在屏幕上出现的时候，台词应该已经在手里了
+    void preloadVoices();
+  };
+  boot.onerror = () => showErr(new Error('渲染器脚本没拉下来：' + boot.src));
+  document.head.appendChild(boot);
+}());
+</script>
+</body>
+</html>

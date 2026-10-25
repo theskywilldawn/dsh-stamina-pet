@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pose-lab</title>
+<style>
+  html, body { margin: 0; background: #f6f7fb; }
+  #stage { position: relative; width: 640px; height: 480px; }
+  #hud { position: fixed; left: 8px; top: 8px; font: 13px/1.4 ui-monospace, monospace; color: #345; }
+</style>
+<div id="stage"></div>
+<div id="hud">loading…</div>
+<script type="module">
+import { createBody } from './kit/body.js';
+import { createWhaleFigure } from './whale/figure.js';
+
+const q = new URLSearchParams(location.search);
+const poses = (q.get('pose') || 'idle').split(',');
+const seg = Number(q.get('seg') || 2.5);        // seconds each pose is held
+const extra = Number(q.get('tail') || 1);       // extra seconds on the last pose
+const scale = Number(q.get('s') || 1.3);
+const hud = document.getElementById('hud');
+
+const fig = await createWhaleFigure(new URL('./whale/', import.meta.url), {});
+const host = {
+  root: document.getElementById('stage'),
+  bounds: () => ({ W: 640, H: 480, floorY: 456, S: scale }),
+  emit: () => {},
+  sound: () => {},
+  start: { x: 320, facing: 1 },
+};
+const body = createBody(host, { figure: fig });
+body.set({ roam: 'off' });
+
+// run the whole pose timeline synchronously, so a headless screenshot needs no clock
+const dt = 1 / 60;
+let T = 0, i = 0;
+for (const [n, pose] of poses.entries()) {
+  body.do(pose);
+  const dur = seg + (n === poses.length - 1 ? extra : 0);
+  for (let k = 0; k < Math.round(dur / dt); k++) { body.step(dt); T += dt; }
+  hud.textContent = `${n + 1}/${poses.length}: ${pose}  t=${T.toFixed(1)}s`;
+}
+let probe = '?';
+try { const L = body.layout(); probe = `mode=${L.mode} hit=${L.hit.length} box=${Math.round(L.box.w)}x${Math.round(L.box.h)}`; }
+catch (e) { probe = 'layout ERR: ' + ((e && e.message) || e); }
+document.title = 'READY';
+hud.textContent += '  [READY] ' + probe;
+</script>
