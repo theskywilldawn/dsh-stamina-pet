@@ -1,6 +1,6 @@
 {
   "name": "dsh-stamina-pet",
-  "version": "2.78.89",
+  "version": "2.79.90",
   "description": "DSH 体力条桌宠：按注意力状态给每个会话算一条体力条，点一下把会话里的大肥鱼叫到桌面上，再点一下收回。附带一套完整的「传承」流程（四份文件 / 体检 / 归档）。",
   "keywords": [
     "dsh",
@@ -17,6 +17,7 @@
     "index.js",
     "client.js",
     "cordis.patch.yml",
+    "patches/",
     "lib/",
     "docs/",
     "test/",
