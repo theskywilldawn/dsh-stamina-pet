@@ -1,0 +1,70 @@
+{
+  "name": "dsh-stamina-pet",
+  "version": "2.80.91",
+  "description": "DSH 体力条桌宠：按注意力状态给每个会话算一条体力条，点一下把会话里的大肥鱼叫到桌面上，再点一下收回。附带一套完整的「传承」流程（四份文件 / 体检 / 归档）。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "stamina",
+    "pet",
+    "fatigue",
+    "attention",
+    "inheritance"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "patches/",
+    "lib/",
+    "docs/",
+    "tools/",
+    "test/",
+    "assets/",
+    "README.md",
+    "小白使用指南.md",
+    "!assets/fonts/local/"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    },
+    "engines": {
+      "dsh": ">=0.1.7-rc.1"
+    }
+  },
+  "scripts": {
+    "test": "node test/metrics.test.mjs && node test/inherit.test.mjs && node --import ./test/register-stub.mjs ./test/boot.test.mjs",
+    "test:metrics": "node test/metrics.test.mjs",
+    "test:inherit": "node test/inherit.test.mjs",
+    "test:boot": "node --import ./test/register-stub.mjs ./test/boot.test.mjs",
+    "test:replay": "node test/replay.mjs",
+    "check": "node --check index.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.1 || ^0.2.0-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "author": "插件·4代小星辰 (LittleStar)",
+  "license": "AGPL-3.0-or-later"
+}

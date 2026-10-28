@@ -1,0 +1,23 @@
+# npm 打包时的额外排除层。
+#
+# ⚠️ 注意：package.json 里有 `files` 白名单时，npm **不再读 .gitignore**，
+# 所以 .gitignore 里排掉的东西必须在这里再排一遍，否则会照样进包。
+# （2026-10-24 实测：17 个 .bak 编辑备份全被塞进了 npm pack。）
+
+# 编辑备份
+*.bak
+*.bak-*
+*.tmp
+*.log
+_chk_*.js
+
+# 本地自备字体（商业授权，不随包分发）
+assets/fonts/local/
+
+# 内部 todo
+待办.md
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini

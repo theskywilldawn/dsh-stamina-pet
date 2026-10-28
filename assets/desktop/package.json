@@ -1,0 +1,7 @@
+{
+  "name": "dsh-chuancheng-desktop-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "传承插件的桌面层：一块全屏透明、点得穿、永远置顶的画布，让大肥鱼真的站到桌面上",
+  "main": "main.js"
+}

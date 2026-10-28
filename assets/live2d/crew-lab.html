@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>crew-lab</title>
+<style>
+  html, body { margin: 0; background: #f6f7fb; }
+  #stage { position: relative; width: 640px; height: 480px; }
+  #hud { position: fixed; left: 8px; top: 8px; font: 13px/1.4 ui-monospace, monospace; color: #345; }
+</style>
+<div id="stage"></div>
+<div id="hud">loading…</div>
+<script type="module">
+import { createBody } from './kit/body.js';
+import { createWhaleFigure } from './whale/figure.js';
+
+const q = new URLSearchParams(location.search);
+const suit = q.get('suit') || 'deepseek-crew';   // 例：deepseek-crew / chatgpt-cape / deepseek-maid
+const secs = Number(q.get('t') || 3);
+const scale = Number(q.get('s') || 1.3);
+const hud = document.getElementById('hud');
+
+let fig, err = '';
+try {
+  fig = await createWhaleFigure(new URL('./whale/', import.meta.url), { scheme: suit });
+} catch (e) {
+  err = 'createWhaleFigure 失败：' + ((e && e.message) || e);
+  hud.textContent = err;
+  document.title = 'ERROR';
+  throw e;
+}
+
+const host = {
+  root: document.getElementById('stage'),
+  bounds: () => ({ W: 640, H: 480, floorY: 456, S: scale }),
+  emit: () => {},
+  sound: () => {},
+  start: { x: 320, facing: 1 },
+};
+let probe = '';
+try {
+  const body = createBody(host, { figure: fig });
+  body.set({ roam: 'off' });
+  body.do('stand');
+  const dt = 1 / 60;
+  for (let k = 0; k < Math.round(secs / dt); k++) body.step(dt);
+  const L = body.layout();
+  probe = `mode=${L.mode} 命中块=${L.hit.length} 盒子=${Math.round(L.box.w)}x${Math.round(L.box.h)}`;
+} catch (e) {
+  err = 'body 阶段失败：' + ((e && e.message) || e);
+  probe = err;
+}
+
+hud.textContent = `suit=${suit}  ${probe}`;
+document.title = err ? 'ERROR' : 'READY';
+</script>
