@@ -32,6 +32,7 @@ import {
   renderHandoff, renderAchievement, renderFarewell, draftGuide, detectGeneration, setPersona,
   HANDOFF_SECTIONS,
 } from './lib/inherit.js';
+import { synthesizeVoice } from './lib/voice.js';
 import { findSessionLog, readSessionFile, assistantMessages, listSessionLogs, readTailEvents, readHeadEvents } from './lib/logreader.js';
 import { analyzeReasoning } from './lib/metrics.js';
 import { runProbe, resolveApiKey } from './lib/probe.js';
@@ -888,6 +889,14 @@ const dictationQueue = [];
         return fail(`写盘失败：${error?.message ?? error}`);
       }
 
+      // ── 临终告别的语音（2026-10-28 接通）──
+      // 开关在这里才第一次被真正读到。文本**已经落盘了**再合成 ——
+      // 合成失败（GPU 忙、WebUI 没开、ffmpeg 不在）绝不能让告别的正文白写。
+      let voice = null;
+      if (kind === 'farewell' && c.farewellVoice) {
+        voice = await synthesizeVoice({ text, outMp3: paths.farewellVoice, cfg: c });
+      }
+
       const label = kind === 'handoff' ? '交接文档' : (kind === 'achievement' ? '一生的成就' : '临终告别');
       const lines = [
         `✅ ${label} 已落盘`,
@@ -897,6 +906,20 @@ const dictationQueue = [];
         privacy.clean ? '· 隐私检查：通过' : `· 隐私检查：⚠️ 强行写入（${privacy.hits.length} 处命中）`,
         '',
       ];
+
+      // 语音结果说清楚：成功报了路径和大小，失败报清卡在哪一环 —— 但都只是附加信息
+      if (voice) {
+        if (voice.ok) {
+          lines.push(`🔊 语音已合成：\`${voice.path}\`（${(voice.bytes / 1024).toFixed(0)} KB）`, '');
+        } else {
+          lines.push(
+            '🔇 语音没合出来 —— **告别正文照样已经写好了**，这一项不影响传承。',
+            `   原因：${voice.error}`,
+            `   目标路径：\`${paths.farewellVoice}\``,
+            '',
+          );
+        }
+      }
 
       // 交接文档写完顺手报一下还差几份
       if (kind === 'handoff') {
